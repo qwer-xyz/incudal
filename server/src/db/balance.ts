@@ -131,31 +131,40 @@ export async function changeBalance(
 
   try {
     const result = await prisma.$transaction(async (tx) => {
-      // 1. 获取当前余额（加锁）
-      const user = await tx.user.findUnique({
+      // 使用 Prisma.Decimal 让金额运算在数据库侧以定点数完成，避免浮点误差
+      const amountDecimal = new Prisma.Decimal(amount)
+
+      // 1. 原子条件更新余额：
+      //    - 扣款时附加 balance >= |amount| 守卫，PostgreSQL 在行锁下会重新校验 WHERE
+      //      （EvalPlanQual），并发场景下不会出现“双花/超额扣减”。
+      //    - increment 在 SQL 侧执行 balance = balance + amount，避免读-改-写竞态。
+      const updated = await tx.user.updateMany({
+        where: amount < 0
+          ? { id: userId, balance: { gte: amountDecimal.abs() } }
+          : { id: userId },
+        data: { balance: { increment: amountDecimal } }
+      })
+
+      if (updated.count === 0) {
+        // 区分“用户不存在”与“余额不足”
+        const exists = await tx.user.findUnique({
+          where: { id: userId },
+          select: { id: true }
+        })
+        throw new Error(exists ? '余额不足' : '用户不存在')
+      }
+
+      // 2. 读取更新后的真实余额，反推变更前余额用于日志
+      const after = await tx.user.findUnique({
         where: { id: userId },
         select: { balance: true }
       })
+      const balanceAfterDecimal = after!.balance as unknown as Prisma.Decimal
+      const balanceBeforeDecimal = new Prisma.Decimal(balanceAfterDecimal).minus(amountDecimal)
+      const balanceAfter = Number(balanceAfterDecimal)
+      const balanceBefore = Number(balanceBeforeDecimal)
 
-      if (!user) {
-        throw new Error('用户不存在')
-      }
-
-      const balanceBefore = Number(user.balance)
-      const balanceAfter = balanceBefore + amount
-
-      // 2. 检查余额是否足够（如果是扣款）
-      if (amount < 0 && balanceAfter < 0) {
-        throw new Error('余额不足')
-      }
-
-      // 3. 更新用户余额
-      await tx.user.update({
-        where: { id: userId },
-        data: { balance: balanceAfter }
-      })
-
-      // 4. 创建余额变动日志
+      // 3. 创建余额变动日志
       const balanceLog = await tx.balanceLog.create({
         data: {
           userId,

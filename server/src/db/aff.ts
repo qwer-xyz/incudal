@@ -625,23 +625,28 @@ export async function createAffWithdrawal(
 
     // 2. 在事务中完成：创建申请 + 自动审批
     const withdrawal = await prisma.$transaction(async (tx) => {
-      // 2.1 获取用户当前余额
-      const user = await tx.user.findUnique({
-        where: { id: userId },
-        select: { affBalance: true, balance: true }
+      // 2.1 原子扣除 AFF 余额（带 affBalance >= amount 守卫，防止并发双花）
+      //     PostgreSQL 在行锁下会重新校验 WHERE（EvalPlanQual），并发请求不会重复转出。
+      const deducted = await tx.user.updateMany({
+        where: { id: userId, affBalance: { gte: amount } },
+        data: { affBalance: { decrement: amount } }
       })
 
-      if (!user) {
-        throw new Error('用户不存在')
+      if (deducted.count === 0) {
+        const exists = await tx.user.findUnique({
+          where: { id: userId },
+          select: { id: true }
+        })
+        throw new Error(exists ? 'AFF 余额不足' : '用户不存在')
       }
 
-      const affBalanceBefore = Number(user.affBalance)
-      const balanceBefore = Number(user.balance)
-
-      // 2.2 检查 AFF 余额
-      if (affBalanceBefore < amount) {
-        throw new Error('AFF 余额不足')
-      }
+      // 2.2 读取扣除后的真实 AFF 余额，反推扣除前余额用于日志
+      const afterDeduct = await tx.user.findUnique({
+        where: { id: userId },
+        select: { affBalance: true }
+      })
+      const affBalanceAfter = Number(afterDeduct!.affBalance)
+      const affBalanceBefore = affBalanceAfter + amount
 
       // 2.3 创建申请记录（直接标记为已通过，方便管理员后台查看）
       const newWithdrawal = await tx.affWithdrawal.create({
@@ -654,14 +659,7 @@ export async function createAffWithdrawal(
         }
       })
 
-      // 2.4 扣除 AFF 余额
-      const affBalanceAfter = affBalanceBefore - amount
-      await tx.user.update({
-        where: { id: userId },
-        data: { affBalance: affBalanceAfter }
-      })
-
-      // 2.5 记录 AFF 日志
+      // 2.4 记录 AFF 日志
       await tx.affLog.create({
         data: {
           userId,
@@ -673,12 +671,19 @@ export async function createAffWithdrawal(
         }
       })
 
-      // 2.6 增加用户主余额
-      const balanceAfter = balanceBefore + amount
+      // 2.5 原子增加用户主余额
       await tx.user.update({
         where: { id: userId },
-        data: { balance: balanceAfter }
+        data: { balance: { increment: amount } }
       })
+
+      // 2.6 读取增加后的真实主余额，反推增加前余额用于日志
+      const afterCredit = await tx.user.findUnique({
+        where: { id: userId },
+        select: { balance: true }
+      })
+      const balanceAfter = Number(afterCredit!.balance)
+      const balanceBefore = balanceAfter - amount
 
       // 2.7 记录余额日志
       await tx.balanceLog.create({
