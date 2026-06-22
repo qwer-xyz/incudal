@@ -9,6 +9,8 @@ import type {
   GenerateInviteRequest,
   InviteListResponse,
   User,
+  AdminCreateUserRequest,
+  AdminCreateUserResponse,
   BadgeOverview,
   BadgeMultiDrawResponse,
   BadgeOwnership,
@@ -79,7 +81,8 @@ import type {
   TelegramWebhookInfoResponse,
   TelegramWebhookSetupResponse,
   UserInvite,
-  UserInviteSummary
+  UserInviteSummary,
+  SendCreateUserEmailCodeResponse
 } from '@/types/api.js'
 
 export type VipRuleType = 'user' | 'hosting'
@@ -702,9 +705,13 @@ const api = {
   users: {
     list: (params: Record<string, unknown> = {}): Promise<PaginatedResponse<User>> =>
       http.get('/users', { params }),
+    create: (data: AdminCreateUserRequest): Promise<AdminCreateUserResponse> =>
+      http.post('/users', data),
     get: (id: number): Promise<User> => http.get(`/users/${id}`),
     update: (id: number, data: UpdateUserRequest): Promise<UpdateUserResponse> =>
       http.patch(`/users/${id}`, data),
+    sendCreateVerificationCode: (email: string): Promise<SendCreateUserEmailCodeResponse> =>
+      http.post('/users/create/send-verification-code', { email }),
     sendChangeEmailCode: (id: number, email: string): Promise<{ message: string; expiresAt: string }> =>
       http.post(`/users/${id}/change-email/send-code`, { email }),
     increaseQuota: (quota: { hostLimit?: number; friendLimit?: number }): Promise<{ message: string }> =>

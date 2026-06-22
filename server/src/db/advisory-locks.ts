@@ -9,6 +9,7 @@ export const HOSTING_BALANCE_LOG_LOCK_NAMESPACE = 4105
 export const INSTANCE_OPERATION_LOCK_NAMESPACE = 4106
 export const USER_DESTROY_BILLING_LOCK_NAMESPACE = 4107
 export const USER_ADMIN_ROLE_LOCK_NAMESPACE = 4108
+export const USER_CREATE_EMAIL_LOCK_NAMESPACE = 4109
 
 export async function tryAdvisoryTransactionLock(
   tx: Prisma.TransactionClient,

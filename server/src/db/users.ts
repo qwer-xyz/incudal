@@ -184,7 +184,8 @@ export async function createUser(
   username: string,
   email: string | null,
   passwordHash: string,
-  role: 'admin' | 'user' = 'user'
+  role: 'admin' | 'user' = 'user',
+  client: Prisma.TransactionClient | typeof prisma = prisma
 ): Promise<number> {
   // 从系统配置获取默认配额
   const { getDefaultQuotaConfig } = await import('./system-config.js')
@@ -193,7 +194,7 @@ export async function createUser(
   // 随机选择头像风格
   const avatarStyle = AVATAR_STYLES[Math.floor(Math.random() * AVATAR_STYLES.length)]
 
-  const user = await prisma.user.create({
+  const user = await client.user.create({
     data: {
       username,
       email,

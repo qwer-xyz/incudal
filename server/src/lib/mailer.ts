@@ -985,6 +985,77 @@ export async function sendPasswordResetEmail(
 }
 
 /**
+ * 发送管理员创建账号通知邮件（包含初始密码）
+ */
+export async function sendAdminCreatedUserEmail(
+    email: string,
+    data: {
+        username: string
+        initialPassword: string
+    }
+): Promise<{ success: boolean; error?: string }> {
+    try {
+        const transporter = await getTransporter()
+
+        if (!transporter) {
+            return { success: false, error: 'SMTP not configured' }
+        }
+
+        const { config, brandName, brandLogoUrl } = await getMailContext()
+
+        const htmlContent = generateEmailHtml({
+            title: '账号已创建',
+            alertType: 'success',
+            alertTitle: '账号创建成功',
+            alertMessage: `管理员已为您创建 ${brandName} 账号。`,
+            greeting: `您好，${data.username}`,
+            paragraphs: [
+                `您的 ${brandName} 账号已创建，请使用以下信息登录：`,
+                '登录后请尽快修改初始密码，并妥善保管账户信息。'
+            ],
+            infoTitle: '登录信息',
+            infoItems: [
+                { label: '用户名', value: data.username },
+                { label: '初始密码', value: data.initialPassword }
+            ],
+            actionTip: '如果您并未申请或预期收到此账号信息，请联系站点管理员。',
+            brandName,
+            brandLogoUrl
+        })
+
+        const textContent = generateEmailText({
+            title: '账号已创建',
+            alertTitle: '账号创建成功',
+            alertMessage: `管理员已为您创建 ${brandName} 账号。`,
+            greeting: `您好，${data.username}`,
+            paragraphs: [
+                `您的 ${brandName} 账号已创建，请使用以下信息登录：`,
+                `用户名：${data.username}`,
+                `初始密码：${data.initialPassword}`,
+                '登录后请尽快修改初始密码，并妥善保管账户信息。'
+            ],
+            actionTip: '如果您并未申请或预期收到此账号信息，请联系站点管理员。',
+            brandName,
+            brandLogoUrl
+        })
+
+        await transporter.sendMail({
+            from: config.fromName ? `"${config.fromName}" <${config.fromEmail}>` : config.fromEmail,
+            to: email,
+            subject: formatBrandSubject(brandName, '账号已创建'),
+            text: textContent,
+            html: htmlContent
+        })
+
+        return { success: true }
+    } catch (error: unknown) {
+        const errorMessage = error instanceof Error ? error.message : String(error)
+        console.error('Failed to send admin created user email:', errorMessage)
+        return { success: false, error: errorMessage }
+    }
+}
+
+/**
  * 发送充值成功通知邮件
  */
 export async function sendRechargeSuccessEmail(

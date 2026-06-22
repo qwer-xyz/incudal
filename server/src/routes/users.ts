@@ -15,12 +15,19 @@ import {
     isOperationVerified,
     consumeOperationVerification
 } from '../lib/operation-verification.js'
-import { isSmtpEnabled, sendBanNotificationEmail, sendVerificationEmail } from '../lib/mailer.js'
+import { isSmtpEnabled, sendAdminCreatedUserEmail, sendBanNotificationEmail, sendVerificationEmail } from '../lib/mailer.js'
 import { sendNotification } from '../lib/notifier.js'
 import { closeUserSessions } from '../lib/terminal-proxy.js'
 import { createVerificationCode, verifyCode } from '../db/email-verification.js'
 import { validateEmailDomain } from '../lib/email-domain.js'
-import { HOSTING_BALANCE_LOG_LOCK_NAMESPACE, USER_ADMIN_ROLE_LOCK_NAMESPACE, tryAdvisoryTransactionLock } from '../db/advisory-locks.js'
+import {
+  HOSTING_BALANCE_LOG_LOCK_NAMESPACE,
+  USER_ADMIN_ROLE_LOCK_NAMESPACE,
+  USER_CREATE_EMAIL_LOCK_NAMESPACE,
+  advisoryTransactionLock,
+  tryAdvisoryTransactionLock
+} from '../db/advisory-locks.js'
+import { buildAdminCreateUserResponse, normalizeAdminCreateUserInput } from '../lib/admin-create-user.js'
 
 const USER_SEARCH_FIELDS = ['username', 'id', 'email'] as const
 type UserSearchField = (typeof USER_SEARCH_FIELDS)[number]
@@ -47,6 +54,15 @@ function parseBooleanQuery(rawValue?: string): boolean {
   }
 
   return ['1', 'true', 'yes', 'on'].includes(rawValue.toLowerCase())
+}
+
+function getAdminCreateEmailLockKey(email: string): number {
+  let hash = 0x811c9dc5
+  for (let index = 0; index < email.length; index++) {
+    hash ^= email.charCodeAt(index)
+    hash = Math.imul(hash, 0x01000193)
+  }
+  return hash | 0
 }
 
 export default async function userRoutes(fastify: FastifyInstance) {
@@ -77,6 +93,32 @@ export default async function userRoutes(fastify: FastifyInstance) {
 
     const existingUser = await db.findUserByEmail(normalizedEmail)
     if (existingUser && existingUser.id !== userId) {
+      return { error: apiError(ErrorCode.EMAIL_ALREADY_REGISTERED) }
+    }
+
+    return { normalizedEmail }
+  }
+
+  async function validateAdminCreateEmailTarget(
+    rawEmail: string
+  ): Promise<{ normalizedEmail: string } | { error: ReturnType<typeof apiError> }> {
+    if (!rawEmail || !rawEmail.includes('@')) {
+      return { error: apiError(ErrorCode.INVALID_EMAIL) }
+    }
+
+    const emailWithoutAllowed = rawEmail.replace(/@/g, '').replace(/\./g, '')
+    if (containsDangerousChars(emailWithoutAllowed)) {
+      return { error: apiError(ErrorCode.EMAIL_CONTAINS_ILLEGAL) }
+    }
+
+    const normalizedEmail = rawEmail.toLowerCase().trim()
+    const domainValidation = await validateEmailDomain(normalizedEmail)
+    if (!domainValidation.valid) {
+      return { error: apiError(ErrorCode.EMAIL_DOMAIN_NOT_ALLOWED, domainValidation.domain || undefined) }
+    }
+
+    const existingUser = await db.findUserByEmail(normalizedEmail)
+    if (existingUser) {
       return { error: apiError(ErrorCode.EMAIL_ALREADY_REGISTERED) }
     }
 
@@ -248,6 +290,213 @@ export default async function userRoutes(fastify: FastifyInstance) {
       pageSize: result.pageSize,
       totalPages: result.totalPages
     }
+  })
+
+  // 管理员创建用户：发送邮箱验证码
+  fastify.post<{
+    Body: { email: string }
+  }>('/create/send-verification-code', {
+    onRequest: [fastify.authenticateAdmin],
+    schema: {
+      body: {
+        type: 'object',
+        required: ['email'],
+        properties: {
+          email: { type: 'string', format: 'email' }
+        }
+      }
+    }
+  }, async (request: FastifyRequest<{ Body: { email: string } }>, reply: FastifyReply) => {
+    const smtpEnabled = await isSmtpEnabled()
+    if (!smtpEnabled) {
+      return reply.code(400).send(apiError(ErrorCode.EMAIL_VERIFICATION_DISABLED))
+    }
+
+    const validationResult = await validateAdminCreateEmailTarget(request.body.email)
+    if ('error' in validationResult) {
+      return reply.code(400).send(validationResult.error)
+    }
+
+    const result = await createVerificationCode(validationResult.normalizedEmail)
+    if (!result) {
+      return reply.code(429).send(apiError(ErrorCode.TOO_MANY_VERIFICATION_REQUESTS))
+    }
+
+    const sendResult = await sendVerificationEmail(
+      validationResult.normalizedEmail,
+      result.code,
+      10,
+      'register'
+    )
+    if (!sendResult.success) {
+      return reply.code(500).send(apiError(ErrorCode.EMAIL_SEND_FAILED))
+    }
+
+    return {
+      message: 'Verification code sent',
+      expiresAt: result.expiresAt.toISOString()
+    }
+  })
+
+  // 管理员创建用户
+  fastify.post<{
+    Body: Record<string, unknown>
+  }>('/', {
+    onRequest: [fastify.authenticateAdmin],
+    schema: {
+      body: {
+        type: 'object',
+        required: ['username', 'email', 'role', 'status', 'verifyEmail'],
+        properties: {
+          username: {
+            type: 'string',
+            minLength: 3,
+            maxLength: 32,
+            pattern: '^[a-zA-Z][a-zA-Z0-9_-]*$'
+          },
+          email: { type: 'string', format: 'email' },
+          role: { type: 'string', enum: ['admin', 'user'] },
+          status: { type: 'string', enum: ['active', 'banned'] },
+          verifyEmail: { type: 'boolean' },
+          emailCode: { type: 'string', minLength: 6, maxLength: 6 }
+        }
+      }
+    }
+  }, async (request: FastifyRequest<{ Body: Record<string, unknown> }>, reply: FastifyReply) => {
+    const normalized = normalizeAdminCreateUserInput(request.body)
+    if (!normalized.ok) {
+      return reply.code(400).send(apiError(normalized.errorCode, normalized.message))
+    }
+
+    const input = normalized.data
+    if (containsDangerousChars(input.username)) {
+      return reply.code(400).send(apiError(ErrorCode.USERNAME_CONTAINS_ILLEGAL))
+    }
+
+    const emailValidation = await validateAdminCreateEmailTarget(input.email)
+    if ('error' in emailValidation) {
+      return reply.code(400).send(emailValidation.error)
+    }
+
+    const existingUser = await db.findUserByUsername(input.username)
+    if (existingUser) {
+      return reply.code(400).send(apiError(ErrorCode.USER_EXISTS))
+    }
+
+    if (input.verifyEmail) {
+      const smtpEnabled = await isSmtpEnabled()
+      if (!smtpEnabled) {
+        return reply.code(400).send(apiError(ErrorCode.EMAIL_VERIFICATION_DISABLED))
+      }
+
+      const validCode = await verifyCode(emailValidation.normalizedEmail, input.emailCode!)
+      if (!validCode) {
+        return reply.code(400).send(apiError(ErrorCode.INVALID_EMAIL_CODE))
+      }
+    }
+
+    const lockKey = getAdminCreateEmailLockKey(emailValidation.normalizedEmail)
+    let createdAccount: { userId: number; initialPassword: string }
+    try {
+      createdAccount = await prisma.$transaction(async (tx) => {
+        await advisoryTransactionLock(tx, USER_CREATE_EMAIL_LOCK_NAMESPACE, lockKey)
+
+        const [existingUserInTx, existingEmailInTx] = await Promise.all([
+          tx.user.findUnique({
+            where: { username: input.username },
+            select: { id: true }
+          }),
+          tx.user.findFirst({
+            where: { email: emailValidation.normalizedEmail },
+            select: { id: true }
+          })
+        ])
+
+        if (existingUserInTx) {
+          throw new Error('ADMIN_CREATE_USER_USERNAME_EXISTS')
+        }
+        if (existingEmailInTx) {
+          throw new Error('ADMIN_CREATE_USER_EMAIL_EXISTS')
+        }
+
+        const { generateRandomPassword } = await import('../lib/incus-config-generator.js')
+        const initialPassword = generateRandomPassword(16)
+        const passwordHash = await bcrypt.hash(initialPassword, 12)
+        const userId = await db.createUser(input.username, emailValidation.normalizedEmail, passwordHash, input.role, tx)
+
+        if (input.status === 'banned') {
+          await tx.user.update({
+            where: { id: userId },
+            data: {
+              status: 'banned',
+              banReason: 'Admin created banned user'
+            }
+          })
+        }
+
+        return { userId, initialPassword }
+      })
+    } catch (error) {
+      if (error instanceof Error && error.message === 'ADMIN_CREATE_USER_USERNAME_EXISTS') {
+        return reply.code(400).send(apiError(ErrorCode.USER_EXISTS))
+      }
+      if (error instanceof Error && error.message === 'ADMIN_CREATE_USER_EMAIL_EXISTS') {
+        return reply.code(400).send(apiError(ErrorCode.EMAIL_ALREADY_REGISTERED))
+      }
+      if (error && typeof error === 'object' && 'code' in error && error.code === 'P2002') {
+        return reply.code(400).send(apiError(ErrorCode.USER_EXISTS))
+      }
+      throw error
+    }
+
+    const { userId, initialPassword } = createdAccount
+
+    const createdUser = await db.findUserById(userId)
+    if (!createdUser) {
+      await db.deleteUser(userId)
+      return reply.code(500).send(apiError(ErrorCode.USER_NOT_FOUND))
+    }
+
+    const passwordDelivery = input.verifyEmail ? 'email' : 'display'
+    if (passwordDelivery === 'email') {
+      const sendResult = await sendAdminCreatedUserEmail(emailValidation.normalizedEmail, {
+        username: input.username,
+        initialPassword
+      })
+      if (!sendResult.success) {
+        await db.deleteUser(userId)
+        return reply.code(500).send(apiError(ErrorCode.EMAIL_SEND_FAILED))
+      }
+    }
+
+    try {
+      await createLog(
+        request.user.id,
+        'user',
+        'user.create',
+        `Admin created user "${input.username}" (ID: ${userId}, email: ${emailValidation.normalizedEmail}, role: ${input.role}, status: ${input.status}, passwordDelivery: ${passwordDelivery})`,
+        'success'
+      )
+
+      await logAdminAction(request.user.id, 'user.create', {
+        ip: request.ip,
+        userAgent: request.headers['user-agent'],
+        targetUserId: userId,
+        targetUsername: input.username,
+        resourceType: 'user',
+        metadata: {
+          role: input.role,
+          status: input.status,
+          verifyEmail: input.verifyEmail,
+          passwordDelivery
+        },
+        reason: 'Admin created user account'
+      })
+    } catch (logError) {
+      console.error('[AdminCreateUser] Failed to write create-user audit log:', logError)
+    }
+
+    return buildAdminCreateUserResponse(createdUser, passwordDelivery, initialPassword)
   })
 
   // 按用户名精确查找用户（管理员，用于创建实例等场景）

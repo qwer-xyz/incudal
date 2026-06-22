@@ -241,6 +241,20 @@ export const rateLimitRules: RateLimitRule[] = [
         description: '获取用户列表 (管理员)'
     },
     {
+        path: '/api/users',
+        method: 'POST',
+        max: 10,
+        timeWindow: '10 minutes',
+        description: '管理员创建用户'
+    },
+    {
+        path: '/api/users/create/send-verification-code',
+        method: 'POST',
+        max: 5,
+        timeWindow: '10 minutes',
+        description: '管理员创建用户发送邮箱验证码'
+    },
+    {
         path: '/api/users/*',
         method: 'PATCH',
         max: 10,

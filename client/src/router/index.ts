@@ -257,6 +257,12 @@ const routes: RouteRecordRaw[] = [
     meta: { requiresAuth: true, requiresAdmin: true, titleKey: 'nav.users', title: '用户' }
   },
   {
+    path: '/admin/users/create',
+    name: 'admin-user-create',
+    component: () => import('@/views/admin/UserCreateView.vue'),
+    meta: { requiresAuth: true, requiresAdmin: true, titleKey: 'admin.users.createUserPage.title', title: '创建用户' }
+  },
+  {
     path: '/admin/hosting',
     name: 'admin-hosting',
     component: () => import('@/views/admin/HostingView.vue'),

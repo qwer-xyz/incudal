@@ -192,6 +192,26 @@ export interface UpdateUserRequest {
   emailCode?: string
 }
 
+export interface AdminCreateUserRequest {
+  username: string
+  email: string
+  role: 'admin' | 'user'
+  status: 'active' | 'banned'
+  verifyEmail: boolean
+  emailCode?: string
+}
+
+export interface AdminCreateUserResponse {
+  user: User
+  passwordDelivery: 'display' | 'email'
+  initialPassword?: string
+}
+
+export interface SendCreateUserEmailCodeResponse {
+  message: string
+  expiresAt: string
+}
+
 export interface TelegramBindingStatus {
   enabled: boolean
   configured: boolean

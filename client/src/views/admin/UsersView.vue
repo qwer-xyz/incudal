@@ -1002,12 +1002,20 @@ function _getQuotaPercent(used, limit) {
         <h1 class="page-title">{{ t('admin.users.title') }}</h1>
         <p class="page-description">{{ t('admin.users.description') }}</p>
       </div>
-      <button class="btn-primary w-full sm:w-auto justify-center" @click="openGenerateModal">
-        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
-        </svg>
-        {{ t('admin.users.generateInvite') }}
-      </button>
+      <div class="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center">
+        <button class="btn-secondary w-full sm:w-auto justify-center" @click="router.push({ name: 'admin-user-create' })">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M18 9v3m0 0v3m0-3h3m-3 0h-3m-2-5a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0" />
+          </svg>
+          {{ t('admin.users.create') }}
+        </button>
+        <button class="btn-primary w-full sm:w-auto justify-center" @click="openGenerateModal">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
+          </svg>
+          {{ t('admin.users.generateInvite') }}
+        </button>
+      </div>
     </div>
 
     <!-- Tab 切换 -->
