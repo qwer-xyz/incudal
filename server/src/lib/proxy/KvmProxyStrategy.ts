@@ -1,4 +1,4 @@
-import { IProxyStrategy, ProxyDeviceResult, ProxyDeviceConfig, NamedProxyDeviceConfig } from './IProxyStrategy.js'
+import { IProxyStrategy, ProxyDeviceResult, ProxyDeviceConfig, NamedProxyDeviceConfig, ProxyDeviceTargetOptions } from './IProxyStrategy.js'
 
 export class KvmProxyStrategy implements IProxyStrategy {
     createProxyDevice(
@@ -7,28 +7,38 @@ export class KvmProxyStrategy implements IProxyStrategy {
         networkMode: string,
         protocol: string,
         publicPort: number,
-        privatePort: number
+        privatePort: number,
+        targetOptions: ProxyDeviceTargetOptions = {}
     ): ProxyDeviceResult {
+        const targetIpv4 = targetOptions.targetIpv4?.trim()
+        const normalizedHostIpv6 = hostIpv6?.trim().replace(/^\[|\]$/g, '')
+
         if (networkMode === 'nat_ipv6_nat') {
             const deviceConfigs: NamedProxyDeviceConfig[] = []
 
             if (hostNatIp && hostNatIp !== '0.0.0.0') {
+                if (!targetIpv4) {
+                    return {
+                        success: false,
+                        errorMessage: 'Current instance has no static IPv4 address for KVM NAT port mapping.'
+                    }
+                }
                 deviceConfigs.push({
                     deviceConfig: {
                         type: 'proxy',
                         listen: `${protocol}:${hostNatIp}:${publicPort}`,
-                        connect: `${protocol}:0.0.0.0:${privatePort}`,
+                        connect: `${protocol}:${targetIpv4}:${privatePort}`,
                         nat: 'true'
                     }
                 })
             }
 
-            if (hostIpv6) {
+            if (normalizedHostIpv6) {
                 deviceConfigs.push({
                     nameSuffix: '-v6',
                     deviceConfig: {
                         type: 'proxy',
-                        listen: `${protocol}:[${hostIpv6}]:${publicPort}`,
+                        listen: `${protocol}:[${normalizedHostIpv6}]:${publicPort}`,
                         connect: `${protocol}:0.0.0.0:${privatePort}`
                     }
                 })
@@ -47,13 +57,13 @@ export class KvmProxyStrategy implements IProxyStrategy {
         let listenAddr: string
 
         if (['ipv6_only', 'ipv6_nat'].includes(networkMode)) {
-            if (!hostIpv6) {
+            if (!normalizedHostIpv6) {
                 return {
                     success: false,
                     errorMessage: 'Current host has no public IPv6/NAT IPv6 configured for KVM port mapping.'
                 }
             }
-            listenAddr = `[${hostIpv6}]`
+            listenAddr = `[${normalizedHostIpv6}]`
         } else {
             if (!hostNatIp || hostNatIp === '0.0.0.0') {
                 return {
@@ -66,10 +76,17 @@ export class KvmProxyStrategy implements IProxyStrategy {
 
         const connectAddr = networkMode === 'ipv6_only' ? '[::]' : '0.0.0.0'
 
+        if (!['ipv6_only', 'ipv6_nat'].includes(networkMode) && !targetIpv4) {
+            return {
+                success: false,
+                errorMessage: 'Current instance has no static IPv4 address for KVM NAT port mapping.'
+            }
+        }
+
         const deviceConfig: ProxyDeviceConfig = {
             type: 'proxy',
             listen: `${protocol}:${listenAddr}:${publicPort}`,
-            connect: `${protocol}:${connectAddr}:${privatePort}`
+            connect: `${protocol}:${!['ipv6_only', 'ipv6_nat'].includes(networkMode) ? targetIpv4 : connectAddr}:${privatePort}`
         }
 
         if (networkMode !== 'ipv6_nat') {

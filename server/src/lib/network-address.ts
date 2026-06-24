@@ -68,6 +68,13 @@ export function selectBindableIpv4ListenAddress(
   return localCandidates.has(fallback) ? fallback : '0.0.0.0'
 }
 
+export function normalizeIpv4Address(value: string | null | undefined): string | null {
+  if (!value) return null
+
+  const address = normalizeNetworkHost(value).split('/')[0]?.trim() || ''
+  return getAddressFamily(address) === 4 ? address : null
+}
+
 /**
  * 判断地址是否为 IPv6
  * 用于端口映射时检测 listen/connect IP 版本是否一致，

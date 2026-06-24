@@ -48,6 +48,7 @@ import { getSystemImageAvailabilityForHost } from '../db/images.js'
 import { createCaddyClient } from '../lib/caddy-client.js'
 import { resolveInstanceTrafficLimitForHost } from '../lib/traffic-multiplier.js'
 import { calculateInstanceTrafficStatus } from '../services/traffic-utils.js'
+import { ProxyStrategyFactory } from '../lib/proxy/index.js'
 
 // 任务超时时间：轻量任务保持短超时，重建/克隆/改节点等重任务允许更长执行窗口
 const LIGHT_TASK_TIMEOUT = 5 * 60 * 1000
@@ -2133,15 +2134,57 @@ async function executeCloneTask(
 
     await client.request('POST', '/1.0/instances', copyPayload, 300000) // 5分钟超时
 
-    // 2. 获取新实例的设备信息，更新端口映射
+    // 2. 分配新的 IPv4 地址（克隆实例必须使用新的 IPv4，避免 IP 冲突）
+    let newIPv4: string | null = null
+    try {
+      let attempts = 0
+      const maxAttempts = 50
+
+      while (attempts < maxAttempts) {
+        newIPv4 = generateRandomIPv4()
+        // 内网 IPv4 只需在同一宿主机内唯一（不同宿主机的内网是隔离的）
+        const exists = await db.isIpAddressExistsOnHost(newIPv4, host.id)
+
+        if (!exists) {
+          console.log(`[Clone] 为新实例随机分配 IPv4: ${newIPv4} (尝试次数: ${attempts + 1})`)
+          break
+        }
+
+        attempts++
+        newIPv4 = null
+      }
+
+      if (!newIPv4) {
+        throw new Error('Failed to allocate IPv4 address, pool may be exhausted')
+      }
+    } catch (err) {
+      console.error('[Clone] IPv4 分配失败:', err)
+      throw err
+    }
+
+    // 3. 获取新实例的设备信息，更新端口映射
     const newInstanceInfo = await getInstance(client, newIncusId) as { devices?: Record<string, { type?: string; listen?: string; connect?: string }> }
     const devices = newInstanceInfo.devices || {}
+    const sourceInstanceInfo = await getInstance(client, sourceInstance.incus_id) as { type?: string }
+    const proxyStrategy = ProxyStrategyFactory.getStrategy(sourceInstanceInfo.type)
 
     // 查找所有 proxy 设备并更新端口
     const updatedDevices: Record<string, unknown> = {}
     const newPortMappings: Array<{ protocol: 'tcp' | 'udp'; publicPort: number; privatePort: number; remark: string | null }> = []
+    const skippedProxyDeviceNames = new Set<string>()
 
     for (const [deviceName, device] of Object.entries(devices)) {
+      if (skippedProxyDeviceNames.has(deviceName)) {
+        continue
+      }
+      if (deviceName.endsWith('-v6')) {
+        const baseDeviceName = deviceName.slice(0, -3)
+        const baseDevice = devices[baseDeviceName]
+        if (baseDevice?.type === 'proxy') {
+          continue
+        }
+      }
+
       if (device.type === 'proxy' && device.listen) {
         // 解析 listen 格式：tcp:0.0.0.0:8080
         const listenMatch = device.listen.match(/^(tcp|udp):(.+):(\d+)$/)
@@ -2165,8 +2208,7 @@ async function executeCloneTask(
             throw new Error('No available port for clone operation')
           }
 
-          // 根据网络模式决定 listen 地址
-          let cloneListenAddr: string
+          // 根据网络模式生成新的 proxy 设备
           const fullHost = await db.getHostById(host.id)
           const bindableIpv4 = selectBindableIpv4ListenAddress(
             (fullHost as any)?.nat_bind_ip || null,
@@ -2174,27 +2216,40 @@ async function executeCloneTask(
             fullHost?.url || null,
             fullHost?.ip_address || null
           )
-          if (['ipv6_only', 'ipv6_nat'].includes(sourceInstance.network_mode)) {
-            // 纯 IPv6 模式：从数据库获取宿主机的公网 IPv6 地址
-            const hostIpv6 = fullHost?.nat_public_ipv6 || fullHost?.ipv6_gateway || fullHost?.ip_address
-            if (hostIpv6 && hostIpv6.includes(':')) {
-              cloneListenAddr = `[${hostIpv6.replace(/^\[|\]$/g, '')}]`
-            } else {
-              cloneListenAddr = bindableIpv4
-            }
-          } else {
-            cloneListenAddr = bindableIpv4
+          let explicitIpv6 = (fullHost as any)?.nat_bind_ipv6 || fullHost?.nat_public_ipv6 || fullHost?.ipv6_gateway || (fullHost?.ip_address?.includes(':') ? fullHost.ip_address : null)
+          if (!explicitIpv6 && fullHost) {
+            try {
+              const ipv6Alias = await prisma.hostAddressAlias.findFirst({
+                where: { hostId: fullHost.id, kind: 'ipv6' },
+                select: { address: true }
+              })
+              if (ipv6Alias?.address) explicitIpv6 = ipv6Alias.address
+            } catch { }
           }
-          const cloneConnectAddr = ['ipv6_only', 'ipv6_nat'].includes(sourceInstance.network_mode) ? '[::]' : '0.0.0.0'
-          const proxyConfig: Record<string, string> = {
-            type: 'proxy',
-            listen: `${protocol}:${cloneListenAddr}:${newPublicPort}`,
-            connect: `${protocol}:${cloneConnectAddr}:${privatePort}`
+
+          const proxyDeviceRes = proxyStrategy.createProxyDevice(
+            bindableIpv4,
+            explicitIpv6,
+            sourceInstance.network_mode,
+            protocol,
+            newPublicPort,
+            privatePort,
+            { targetIpv4: newIPv4 }
+          )
+          const deviceConfigs = proxyDeviceRes.deviceConfigs
+            || (proxyDeviceRes.deviceConfig ? [{ deviceConfig: proxyDeviceRes.deviceConfig }] : [])
+
+          if (!proxyDeviceRes.success || deviceConfigs.length === 0) {
+            throw new Error(proxyDeviceRes.errorMessage || 'Failed to generate cloned port mapping proxy device')
           }
-          if (!['ipv6_only', 'ipv6_nat'].includes(sourceInstance.network_mode)) {
-            proxyConfig.nat = 'true'
+
+          skippedProxyDeviceNames.add(`${deviceName}-v6`)
+          skippedProxyDeviceNames.add(deviceName.endsWith('-v6') ? deviceName.slice(0, -3) : `${deviceName}-v6`)
+          const newDeviceBaseName = `proxy-${protocol}-${newPublicPort}`
+          for (const deviceEntry of deviceConfigs) {
+            const resolvedDeviceName = `${newDeviceBaseName}${deviceEntry.nameSuffix || ''}`
+            updatedDevices[resolvedDeviceName] = deviceEntry.deviceConfig
           }
-          updatedDevices[deviceName] = proxyConfig
 
           newPortMappings.push({
             protocol,
@@ -2209,48 +2264,18 @@ async function executeCloneTask(
       }
     }
 
-    // 3. 分配新的 IPv4 地址（克隆实例必须使用新的 IPv4，避免 IP 冲突）
-    let newIPv4: string | null = null
-    try {
-      let attempts = 0
-      const maxAttempts = 50
-
-      while (attempts < maxAttempts) {
-        newIPv4 = generateRandomIPv4()
-        // 内网 IPv4 只需在同一宿主机内唯一（不同宿主机的内网是隔离的）
-        const exists = await db.isIpAddressExistsOnHost(newIPv4, host.id)
-
-        if (!exists) {
-          console.log(`[Clone] 为新实例随机分配 IPv4: ${newIPv4} (尝试次数: ${attempts + 1})`)
-          break
-        }
-
-        attempts++
-        newIPv4 = null
-      }
-
-      if (!newIPv4) {
-        throw new Error('Failed to allocate IPv4 address, pool may be exhausted')
-      }
-
-      // 更新 eth0 设备的 ipv4.address
-      if (updatedDevices['eth0']) {
-        (updatedDevices['eth0'] as Record<string, string>)['ipv4.address'] = newIPv4
-      } else {
-        // 从原设备复制并修改
-        const eth0Device = devices['eth0'] as Record<string, string> | undefined
-        if (eth0Device) {
-          updatedDevices['eth0'] = {
-            ...eth0Device,
-            'ipv4.address': newIPv4
-          }
+    // 更新 eth0 设备的 ipv4.address
+    if (updatedDevices['eth0']) {
+      (updatedDevices['eth0'] as Record<string, string>)['ipv4.address'] = newIPv4
+    } else {
+      // 从原设备复制并修改
+      const eth0Device = devices['eth0'] as Record<string, string> | undefined
+      if (eth0Device) {
+        updatedDevices['eth0'] = {
+          ...eth0Device,
+          'ipv4.address': newIPv4
         }
       }
-
-      // NAT 模式使用 connect 0.0.0.0，无需替换为实际 IP
-    } catch (err) {
-      console.error('[Clone] IPv4 分配失败:', err)
-      throw err
     }
 
     // 4. 处理 IPv6 地址冲突（dual/ipv6 模式需要分配新 IP）

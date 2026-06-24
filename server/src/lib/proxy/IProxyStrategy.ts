@@ -12,6 +12,10 @@ export interface NamedProxyDeviceConfig {
     deviceConfig: ProxyDeviceConfig;
 }
 
+export interface ProxyDeviceTargetOptions {
+    targetIpv4?: string | null;
+}
+
 export interface ProxyDeviceResult {
     success: boolean;
     errorMessage?: string;
@@ -26,6 +30,7 @@ export interface IProxyStrategy {
         networkMode: string,
         protocol: string,
         publicPort: number,
-        privatePort: number
+        privatePort: number,
+        targetOptions?: ProxyDeviceTargetOptions
     ): ProxyDeviceResult;
 }

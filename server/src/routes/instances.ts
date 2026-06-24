@@ -56,7 +56,7 @@ import { validateCommandsOwnership, mergeCommandContents, getImageDistroFromAlia
 import { getPlanById, isPaidPackage } from '../db/package-plans.js'
 import { calculateCreateBilling } from '../db/billing-operations.js'
 import { getUserBalance } from '../db/balance.js'
-import { selectBindableIpv4ListenAddress } from '../lib/network-address.js'
+import { normalizeIpv4Address, selectBindableIpv4ListenAddress } from '../lib/network-address.js'
 import { applyTrafficMultiplier, normalizeTrafficMultiplier, resolveInstanceTrafficLimitForHost } from '../lib/traffic-multiplier.js'
 import {
   persistResolvedInstanceNetworkAddresses,
@@ -74,6 +74,13 @@ import {
   buildChangeHostOptions
 } from './instances/helpers.js'
 import { createInstanceAsync } from './instances/create-async.js'
+
+function resolveInstanceTargetIpv4FromIncusDevice(
+  incusInstance: { devices?: Record<string, Record<string, unknown> | undefined> }
+): string | null {
+  const eth0Ipv4 = incusInstance.devices?.eth0?.['ipv4.address']
+  return typeof eth0Ipv4 === 'string' ? normalizeIpv4Address(eth0Ipv4) : null
+}
 
 export default async function instanceRoutes(fastify: FastifyInstance) {
   // 获取实例列表（支持分页和搜索）
@@ -3687,7 +3694,14 @@ export default async function instanceRoutes(fastify: FastifyInstance) {
         host.url,
         host.ip_address || null
       )
-      const proxyDeviceRes = proxyStrategy.createProxyDevice(bindableIpv4, explicitIpv6, instance.network_mode, protocol, allocatedPort, privatePort);
+      let targetIpv4 = normalizeIpv4Address(instance.ipv4)
+      if (!targetIpv4) {
+        const incusInstance = await getInstance(client, instance.incus_id) as { devices?: Record<string, Record<string, unknown> | undefined> }
+        targetIpv4 = resolveInstanceTargetIpv4FromIncusDevice(incusInstance)
+      }
+      const proxyDeviceRes = proxyStrategy.createProxyDevice(bindableIpv4, explicitIpv6, instance.network_mode, protocol, allocatedPort, privatePort, {
+        targetIpv4
+      });
 
       const deviceConfigs = proxyDeviceRes.deviceConfigs
         || (proxyDeviceRes.deviceConfig ? [{ deviceConfig: proxyDeviceRes.deviceConfig }] : [])
@@ -4004,6 +4018,11 @@ export default async function instanceRoutes(fastify: FastifyInstance) {
     const createdDeviceNames: string[] = []
     try {
       const client = await getIncusClient(host)
+      let targetIpv4 = normalizeIpv4Address(instance.ipv4)
+      if (!targetIpv4) {
+        const incusInstance = await getInstance(client, instance.incus_id) as { devices?: Record<string, Record<string, unknown> | undefined> }
+        targetIpv4 = resolveInstanceTargetIpv4FromIncusDevice(incusInstance)
+      }
 
       // 对于 Both 模式，需要创建 TCP 和 UDP 两组映射
       const protocolsToCreate: Array<'tcp' | 'udp'> = protocol === 'both' ? ['tcp', 'udp'] : [protocol]
@@ -4061,7 +4080,9 @@ export default async function instanceRoutes(fastify: FastifyInstance) {
             host.url,
             host.ip_address || null
           )
-          const proxyDeviceRes = proxyStrategy.createProxyDevice(bindableIpv4, explicitBatchIpv6, instance.network_mode, proto, mapping.publicPort, mapping.privatePort);
+          const proxyDeviceRes = proxyStrategy.createProxyDevice(bindableIpv4, explicitBatchIpv6, instance.network_mode, proto, mapping.publicPort, mapping.privatePort, {
+            targetIpv4
+          });
 
           const deviceConfigs = proxyDeviceRes.deviceConfigs
             || (proxyDeviceRes.deviceConfig ? [{ deviceConfig: proxyDeviceRes.deviceConfig }] : [])
