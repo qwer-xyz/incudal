@@ -6,6 +6,9 @@
 import { prisma } from './prisma.js'
 import type { AffCode, AffLog, AffLogType, AffWithdrawal, AffWithdrawalStatus, Prisma, PrismaClient } from '@prisma/client'
 import { nanoid } from 'nanoid'
+import { getSystemConfigBoolean } from './system-config.js'
+
+const AFF_REBATE_DISABLED_ERROR = 'AFF 返利暂未开启，暂时无法使用优惠码'
 
 // ==================== AFF 余额操作 ====================
 
@@ -24,18 +27,15 @@ export async function getAffBalance(userId: number): Promise<number> {
  * 检查用户是否已激活 AFF
  */
 export async function isAffActivated(userId: number): Promise<boolean> {
-  // 由于需求变更，AFF 推荐计划现在无需充值即可使用
-  // 所有用户都可以使用AFF推荐计划
-  // 保留userId参数以保持API兼容性，但暂时不需要实际查询数据库
-  userId; // 使用参数避免编译警告
-  return true;
-  
-  // 原来的逻辑（已注释）
-  // const user = await prisma.user.findUnique({
-  //   where: { id: userId },
-  //   select: { affActivatedAt: true }
-  // })
-  // return !!user?.affActivatedAt
+  void userId // 保留参数以兼容原调用签名
+  return isAffRebateEnabled()
+}
+
+/**
+ * 检查 AFF 返利功能是否开启。
+ */
+export async function isAffRebateEnabled(): Promise<boolean> {
+  return getSystemConfigBoolean('aff_rebate_enabled', false)
 }
 
 /**
@@ -256,7 +256,7 @@ export async function createAffCode(
     // 1. 检查是否已激活 AFF
     const activated = await isAffActivated(userId)
     if (!activated) {
-      return { success: false, error: '推荐计划尚未激活，请先充值任意金额' }
+      return { success: false, error: AFF_REBATE_DISABLED_ERROR }
     }
 
     // 固定折扣率和返利率为 5%/5%
@@ -400,6 +400,11 @@ export async function validateAffCode(
   commissionRate?: number
   error?: string
 }> {
+  const activated = await isAffActivated(userId)
+  if (!activated) {
+    return { valid: false, error: AFF_REBATE_DISABLED_ERROR }
+  }
+
   // 1. 查询优惠码
   const affCode = await prisma.affCode.findUnique({
     where: { code: code.toUpperCase() }
@@ -1012,6 +1017,11 @@ export async function validateMailAffCode(
   commissionRate?: number
   error?: string
 }> {
+  const activated = await isAffActivated(userId)
+  if (!activated) {
+    return { valid: false, error: AFF_REBATE_DISABLED_ERROR }
+  }
+
   // 1. 查询优惠码
   const affCode = await prisma.affCode.findUnique({
     where: { code: code.toUpperCase() }

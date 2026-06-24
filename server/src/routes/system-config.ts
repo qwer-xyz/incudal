@@ -58,11 +58,12 @@ export default async function systemConfigRoutes(fastify: FastifyInstance) {
     fastify.get('/public', {
         config: { rateLimit: { max: 60, timeWindow: '1 minute' } }
     }, async (_request: FastifyRequest, _reply: FastifyReply) => {
-        const [registrationEnabled, requireInviteCode, ticketEnabled, freeSiteMode, mailAvailable, turnstileEnabled, turnstileSiteKey, avatarApiBase, smtpEnabled, emailDomainWhitelistEnabled, emailAllowedDomains, transferFee, footerContactEmail, footerTelegramLink, hostingMarketEntryEnabled, hostingNotice, brandName, brandSubtitle, brandLogoUrl, popupAnnouncementConfig, popupPromoImageUrlConfig, popupPromoPackageIdConfig] = await Promise.all([
+        const [registrationEnabled, requireInviteCode, ticketEnabled, freeSiteMode, affRebateEnabled, mailAvailable, turnstileEnabled, turnstileSiteKey, avatarApiBase, smtpEnabled, emailDomainWhitelistEnabled, emailAllowedDomains, transferFee, footerContactEmail, footerTelegramLink, hostingMarketEntryEnabled, hostingNotice, brandName, brandSubtitle, brandLogoUrl, popupAnnouncementConfig, popupPromoImageUrlConfig, popupPromoPackageIdConfig] = await Promise.all([
             db.isRegistrationEnabled(),
             db.isInviteCodeRequired(),
             db.getSystemConfigBoolean('ticket_enabled', true),
             db.getSystemConfigBoolean('free_site_mode', false),
+            db.getSystemConfigBoolean('aff_rebate_enabled', false),
             hasAvailableMailOffering(),
             db.getSystemConfigBoolean('turnstile_enabled', false),
             db.getSystemConfig('turnstile_site_key'),
@@ -168,6 +169,7 @@ export default async function systemConfigRoutes(fastify: FastifyInstance) {
             requireInviteCode,
             ticketEnabled,
             freeSiteMode,
+            affRebateEnabled,
             mailAvailable,
             turnstileEnabled,
             turnstileSiteKey: turnstileEnabled ? turnstileSiteKey : null,
@@ -257,6 +259,7 @@ export default async function systemConfigRoutes(fastify: FastifyInstance) {
             'invite_default_expire_days',
             'hosting_feature_enabled',
             'hosting_market_entry_enabled',
+            'aff_rebate_enabled',
             'hosting_notice',
             'ticket_enabled',
             'free_site_mode',
@@ -314,7 +317,7 @@ export default async function systemConfigRoutes(fastify: FastifyInstance) {
         ]
 
         // 布尔类型配置键
-        const booleanKeys = ['registration_enabled', 'require_invite_code', 'hosting_feature_enabled', 'hosting_market_entry_enabled', 'ticket_enabled', 'free_site_mode', 'free_site_register_gift_enabled', 'turnstile_enabled', 'telegram_bot_enabled', 'telegram_group_join_enabled', 'telegram_vip_group_join_enabled', 'smtp_enabled', 'smtp_secure', 'email_domain_whitelist_enabled']
+        const booleanKeys = ['registration_enabled', 'require_invite_code', 'hosting_feature_enabled', 'hosting_market_entry_enabled', 'aff_rebate_enabled', 'ticket_enabled', 'free_site_mode', 'free_site_register_gift_enabled', 'turnstile_enabled', 'telegram_bot_enabled', 'telegram_group_join_enabled', 'telegram_vip_group_join_enabled', 'smtp_enabled', 'smtp_secure', 'email_domain_whitelist_enabled']
         // 字符串类型配置键
         const stringKeys = [
             'turnstile_site_key',

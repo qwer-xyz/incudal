@@ -549,20 +549,15 @@ const REFRESH_TOKEN_CONFIG = {
     expiresInSeconds: 30 * 24 * 60 * 60,  // 30天
 }
 
-// 导出任务内存存储（替代 Redis）
-const exportTaskStore = new Map<string, ExportTaskData>()
+// 导出任务 TTL（数据库存储）
 const EXPORT_TASK_TTL = 30 * 60 * 1000  // 30分钟（毫秒）
 
-// 定期清理过期数据（每5分钟执行一次）
+// 定期清理过期导出任务（每5分钟执行一次）
 setInterval(() => {
-    const now = Date.now()
-    // 清理过期导出任务
-    for (const [id, task] of exportTaskStore.entries()) {
-        if (task.expiresAt < now) {
-            exportTaskStore.delete(id)
-        }
-    }
-}, 5 * 60 * 1000)
+    prisma.exportTask.deleteMany({
+        where: { expiresAt: { lt: new Date() } }
+    }).catch(() => {})
+}, 5 * 60 * 1000).unref()
 
 /**
  * 清理过期的 Refresh Token（定期任务）
@@ -1138,38 +1133,66 @@ export interface ExportTaskData {
 }
 
 /**
- * 创建导出任务（内存存储）
+ * 创建导出任务（数据库存储）
  */
 export async function createExportTask(data: Omit<ExportTaskData, 'createdAt' | 'expiresAt'>): Promise<ExportTaskData> {
     const now = Date.now()
+    const expiresAt = now + EXPORT_TASK_TTL
 
-    const task: ExportTaskData = {
-        ...data,
-        createdAt: now,
-        expiresAt: now + EXPORT_TASK_TTL
+    const record = await prisma.exportTask.create({
+        data: {
+            id: data.id,
+            instanceId: data.instanceId,
+            backupId: data.backupId,
+            incusBackupName: data.incusBackupName,
+            userId: data.userId,
+            status: data.status,
+            expiresAt: new Date(expiresAt)
+        }
+    })
+
+    return {
+        id: record.id,
+        instanceId: record.instanceId,
+        backupId: record.backupId,
+        incusBackupName: record.incusBackupName,
+        userId: record.userId,
+        status: record.status as ExportTaskData['status'],
+        error: record.error ?? undefined,
+        createdAt: record.createdAt.getTime(),
+        expiresAt: record.expiresAt.getTime()
     }
-
-    exportTaskStore.set(data.id, task)
-    return task
 }
 
 /**
  * 获取导出任务
  */
 export async function getExportTask(taskId: string): Promise<ExportTaskData | null> {
-    const task = exportTaskStore.get(taskId)
-    
-    if (!task) {
+    const record = await prisma.exportTask.findUnique({
+        where: { id: taskId }
+    })
+
+    if (!record) {
         return null
     }
 
     // 检查是否过期
-    if (Date.now() > task.expiresAt) {
-        exportTaskStore.delete(taskId)
+    if (Date.now() > record.expiresAt.getTime()) {
+        await prisma.exportTask.delete({ where: { id: taskId } }).catch(() => {})
         return null
     }
 
-    return task
+    return {
+        id: record.id,
+        instanceId: record.instanceId,
+        backupId: record.backupId,
+        incusBackupName: record.incusBackupName,
+        userId: record.userId,
+        status: record.status as ExportTaskData['status'],
+        error: record.error ?? undefined,
+        createdAt: record.createdAt.getTime(),
+        expiresAt: record.expiresAt.getTime()
+    }
 }
 
 /**
@@ -1180,24 +1203,28 @@ export async function updateExportTaskStatus(
     status: ExportTaskData['status'],
     error?: string
 ): Promise<boolean> {
-    const task = exportTaskStore.get(taskId)
-    
-    if (!task) {
+    const record = await prisma.exportTask.findUnique({
+        where: { id: taskId }
+    })
+
+    if (!record) {
         return false
     }
 
     // 检查是否过期
-    if (Date.now() > task.expiresAt) {
-        exportTaskStore.delete(taskId)
+    if (Date.now() > record.expiresAt.getTime()) {
+        await prisma.exportTask.delete({ where: { id: taskId } }).catch(() => {})
         return false
     }
 
-    task.status = status
-    if (error) {
-        task.error = error
-    }
+    await prisma.exportTask.update({
+        where: { id: taskId },
+        data: {
+            status,
+            ...(error !== undefined ? { error } : {})
+        }
+    })
 
-    exportTaskStore.set(taskId, task)
     return true
 }
 
@@ -1205,7 +1232,10 @@ export async function updateExportTaskStatus(
  * 删除导出任务
  */
 export async function deleteExportTask(taskId: string): Promise<boolean> {
-    return exportTaskStore.delete(taskId)
+    const result = await prisma.exportTask.deleteMany({
+        where: { id: taskId }
+    })
+    return result.count > 0
 }
 
 // ==================== OAuth State 验证（JWT 签名，无需存储） ====================

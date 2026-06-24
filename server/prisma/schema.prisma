@@ -264,6 +264,7 @@ enum PaymentProviderType {
   alipay_direct // 支付宝直连（预留）
   wechat_direct // 微信直连（预留）
   manual        // 人工充值
+  recharge_card // 卡密充值
 }
 
 // 支付渠道状态
@@ -419,8 +420,10 @@ model User {
   terminalSavedCommands TerminalSavedCommand[]
 
   // 计费相关
-  balanceLogs     BalanceLog[]
-  rechargeRecords RechargeRecord[]
+  balanceLogs           BalanceLog[]
+  rechargeRecords       RechargeRecord[]
+  rechargeCardsCreated  RechargeCard[] @relation("RechargeCardsCreated")
+  rechargeCardsUsed     RechargeCard[] @relation("RechargeCardsUsed")
   badgeOwnerships UserBadgeOwnership[]
   vipBenefitClaims VipBenefitClaim[]
 
@@ -2164,6 +2167,7 @@ model RechargeRecord {
 
   user     User            @relation(fields: [userId], references: [id], onDelete: Cascade)
   provider PaymentProvider @relation(fields: [providerId], references: [id])
+  rechargeCard RechargeCard?
 
   @@index([userId, status])
   @@index([status, createdAt])
@@ -2171,6 +2175,31 @@ model RechargeRecord {
   @@index([tradeNo])
   @@index([status, expiredAt]) // 计费调度器使用：清理过期订单
   @@map("recharge_records")
+}
+
+// 充值卡密
+model RechargeCard {
+  id               Int      @id @default(autoincrement())
+  cardNo           String   @unique @map("card_no")
+  passwordHash     String   @map("password_hash")
+  amount           Decimal  @db.Decimal(10, 2)
+  batchNo          String   @map("batch_no")
+  createdById      Int?     @map("created_by_id")
+  createdAt        DateTime @default(now()) @map("created_at")
+  usedById         Int?     @map("used_by_id")
+  usedAt           DateTime? @map("used_at")
+  rechargeRecordId Int?     @unique @map("recharge_record_id")
+
+  createdBy      User?           @relation("RechargeCardsCreated", fields: [createdById], references: [id], onDelete: SetNull)
+  usedBy         User?           @relation("RechargeCardsUsed", fields: [usedById], references: [id], onDelete: SetNull)
+  rechargeRecord RechargeRecord? @relation(fields: [rechargeRecordId], references: [id], onDelete: SetNull)
+
+  @@index([batchNo])
+  @@index([createdById])
+  @@index([usedById])
+  @@index([usedAt])
+  @@index([createdAt])
+  @@map("recharge_cards")
 }
 
 // VIP 等级规则配置
@@ -2985,4 +3014,21 @@ model HostingZone {
 
   @@index([active, sortOrder])
   @@map("hosting_zones")
+}
+
+// 导出任务表（替代内存 Map 存储）
+model ExportTask {
+  id              String   @id // UUID
+  instanceId      Int      @map("instance_id")
+  backupId        Int      @map("backup_id")
+  incusBackupName String   @map("incus_backup_name")
+  userId          Int      @map("user_id")
+  status          String   @default("creating") // creating | ready | downloading | completed | error
+  error           String?
+  createdAt       DateTime @default(now()) @map("created_at")
+  expiresAt       DateTime @map("expires_at")
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("export_tasks")
 }

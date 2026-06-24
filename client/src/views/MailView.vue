@@ -37,6 +37,7 @@ const affCodeDiscount = ref(0)
 const affCodeCommissionRate = ref(0)
 const affCodeError = ref('')
 const affCodeVerifying = ref(false)
+const affCodeDisabled = computed(() => !configStore.affRebateEnabled)
 
 // 计算属性
 const selectedSource = computed(() => sources.value.find(s => s.id === selectedSourceId.value))
@@ -133,6 +134,11 @@ function resetAffCode() {
 }
 
 async function verifyAffCode() {
+  if (affCodeDisabled.value) {
+    resetAffCode()
+    return
+  }
+
   if (!affCode.value.trim()) {
     resetAffCode()
     return
@@ -169,7 +175,7 @@ async function purchaseSubscription() {
   try {
     await api.mail.purchaseSubscription(
       selectedPlanId.value,
-      affCodeValid.value ? affCode.value.trim() : undefined
+      configStore.affRebateEnabled && affCodeValid.value ? affCode.value.trim() : undefined
     )
     toast.success(t('mail.purchaseSuccess'))
     resetAffCode()
@@ -586,13 +592,13 @@ function getBillingCycleSuffix(cycle: string | null | undefined) {
                 v-model="affCode" 
                 type="text" 
                 class="input flex-1" 
-                :placeholder="t('aff.promoCodeInputPlaceholder')"
-                :disabled="affCodeVerifying"
+                :placeholder="affCodeDisabled ? t('aff.promoCodeDisabledByAdmin') : t('aff.promoCodeInputPlaceholder')"
+                :disabled="affCodeVerifying || affCodeDisabled"
                 @keyup.enter="verifyAffCode"
               />
               <button 
                 class="btn btn-outline px-4"
-                :disabled="affCodeVerifying || !affCode.trim()"
+                :disabled="affCodeVerifying || affCodeDisabled || !affCode.trim()"
                 @click="verifyAffCode"
               >
                 <span v-if="affCodeVerifying" class="loading loading-spinner loading-sm"></span>
@@ -607,6 +613,9 @@ function getBillingCycleSuffix(cycle: string | null | undefined) {
             </p>
             <p v-else-if="affCodeValid === false" class="text-xs text-red-500 mt-2">
               {{ affCodeError }}
+            </p>
+            <p v-else-if="affCodeDisabled" class="text-xs text-themed-muted mt-2">
+              {{ t('aff.promoCodeDisabledByAdmin') }}
             </p>
           </div>
         </div>

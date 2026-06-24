@@ -4,7 +4,7 @@ import router from './router'
 import i18n, { getLocale } from './locales'
 import App from './App.vue'
 import './styles/main.css'
-import 'flag-icons/css/flag-icons.min.css'
+// flag-icons CSS 改为懒加载，在 FlagIcon.vue 组件首次使用时动态导入，避免全量加载到首屏
 
 const app = createApp(App)
 const pinia = createPinia()

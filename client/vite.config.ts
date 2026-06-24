@@ -98,9 +98,7 @@ export default defineConfig(({ mode }) => {
       minify: 'terser',
       terserOptions: {
         compress: {
-          // 临时保留 console.error 和 console.warn，方便调试白屏问题
-          drop_console: false,  // 临时禁用，方便调试
-          pure_funcs: ['console.log', 'console.debug', 'console.info'],  // 只移除这些
+          drop_console: true,  // 生产环境移除所有 console 输出
           drop_debugger: true,
         },
       },

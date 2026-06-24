@@ -5,7 +5,7 @@
 
 import { prisma } from './prisma.js'
 import type { Instance, PackagePlan, Prisma } from '@prisma/client'
-import { getInstanceAffBinding, processAffCommission } from './aff.js'
+import { getInstanceAffBinding, isAffRebateEnabled, processAffCommission } from './aff.js'
 import { getInstanceBillingLineageIds } from './billing-records.js'
 import {
   calculateDiscountAmount,
@@ -404,7 +404,8 @@ export async function calculatePlanChange(
 
   // ========== 获取 AFF 折扣率 ==========
   let discountRate = 0
-  const affBinding = await getInstanceAffBinding(instance.id)
+  const affEnabled = await isAffRebateEnabled()
+  const affBinding = affEnabled ? await getInstanceAffBinding(instance.id) : null
   if (affBinding) {
     discountRate = Number(affBinding.affCode.discountRate) || 0
   }
@@ -466,7 +467,8 @@ export async function calculateInstancePriceAdjustmentQuote(
   const billingCycle = instance.billingCycle || 1
 
   let discountRate = 0
-  const affBinding = await getInstanceAffBinding(instance.id, tx)
+  const affEnabled = await isAffRebateEnabled()
+  const affBinding = affEnabled ? await getInstanceAffBinding(instance.id, tx) : null
   if (affBinding?.affCode?.enabled) {
     discountRate = Number(affBinding.affCode.discountRate) || 0
   }
@@ -544,7 +546,8 @@ export async function performRenewal(
   const { amount: originalAmount, newExpiresAt } = calculateRenewBilling(instance, months)
 
   // 检查 AFF 绑定，计算折扣
-  const affBinding = await getInstanceAffBinding(instance.id)
+  const affEnabled = await isAffRebateEnabled()
+  const affBinding = affEnabled ? await getInstanceAffBinding(instance.id) : null
   let discountRate = 0
   let discountAmount = 0
   let finalAmount = originalAmount
@@ -646,7 +649,7 @@ export async function performRenewal(
     })
 
     // 如果有 AFF 绑定，给优惠码创建者返利
-    if (affBinding) {
+    if (affEnabled && affBinding) {
       await processAffCommission(
         affBinding.affCode.id,
         instance.id,
@@ -991,7 +994,8 @@ export async function getInstanceBillingInfo(instanceId: number): Promise<{
     })
 
     // 获取 AFF 绑定信息，计算折扣
-    const affBinding = await getInstanceAffBinding(instanceId)
+    const affEnabled = await isAffRebateEnabled()
+    const affBinding = affEnabled ? await getInstanceAffBinding(instanceId) : null
     let discountRate = 0
     if (affBinding) {
       discountRate = Number(affBinding.affCode.discountRate)

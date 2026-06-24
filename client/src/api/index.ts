@@ -1,4 +1,4 @@
-import axios, { type AxiosInstance } from 'axios'
+import axios, { type AxiosInstance, type InternalAxiosRequestConfig } from 'axios'
 import { useAuthStore } from '@/stores/auth'
 import type {
   LoginRequest,
@@ -308,6 +308,29 @@ const http: AxiosInstance = axios.create({
   }
 })
 
+// ==================== AbortController 请求取消机制 ====================
+
+// 追踪所有活跃的 AbortController
+const pendingControllers = new Set<AbortController>()
+type AxiosSignal = NonNullable<InternalAxiosRequestConfig['signal']>
+const controllerBySignal = new Map<AxiosSignal, AbortController>()
+
+/**
+ * 取消所有待处理的请求
+ * 在页面切换时调用，避免过期请求覆盖新数据
+ */
+export function cancelAllPendingRequests(): void {
+  pendingControllers.forEach(controller => {
+    try {
+      controller.abort()
+    } catch {
+      // 忽略取消错误
+    }
+  })
+  pendingControllers.clear()
+  controllerBySignal.clear()
+}
+
 // 刷新 token 的锁，防止多个请求同时触发刷新
 let isRefreshing = false
 let failedQueue: Array<{
@@ -353,7 +376,7 @@ function parseJWT(token: string): { exp?: number; iat?: number } | null {
 }
 
 /**
- * 检查 token 是否即将过期（简化版：剩余时间少于 1 天）
+ * 检查 token 是否即将过期（剩余时间少于 5 分钟）
  */
 function isTokenExpiringSoon(token: string): boolean {
   const decoded = parseJWT(token)
@@ -363,8 +386,8 @@ function isTokenExpiringSoon(token: string): boolean {
   const exp = decoded.exp * 1000 // 转换为毫秒
   const now = Date.now()
   const timeUntilExpiry = exp - now
-  // 简化版：如果剩余时间少于 1 天，则认为即将过期
-  return timeUntilExpiry < 24 * 60 * 60 * 1000
+  // 如果剩余时间少于 5 分钟，则认为即将过期，触发主动刷新
+  return timeUntilExpiry < 5 * 60 * 1000
 }
 
 /**
@@ -444,6 +467,14 @@ async function proactiveRefreshToken(): Promise<string | null> {
 // 请求拦截器 - 添加 token 并检查是否需要刷新
 http.interceptors.request.use(
   async (config) => {
+    // 为未显式传入 signal 的请求创建 AbortController 并追踪
+    if (!config.signal) {
+      const controller = new AbortController()
+      config.signal = controller.signal
+      pendingControllers.add(controller)
+      controllerBySignal.set(controller.signal, controller)
+    }
+
     let token = localStorage.getItem('token')
     if (token) {
       // 检查 token 是否即将过期，如果是则先刷新
@@ -463,8 +494,32 @@ http.interceptors.request.use(
 
 // 响应拦截器 - 处理错误和自动刷新 token
 http.interceptors.response.use(
-  (response) => response.data,
+  (response) => {
+    // 请求成功，从追踪集合中移除对应的 AbortController
+    if (response.config?.signal) {
+      const controller = controllerBySignal.get(response.config.signal)
+      if (controller) {
+        pendingControllers.delete(controller)
+        controllerBySignal.delete(response.config.signal)
+      }
+    }
+    return response.data
+  },
   async (error) => {
+    // 请求失败，从追踪集合中移除对应的 AbortController
+    if (error.config?.signal) {
+      const controller = controllerBySignal.get(error.config.signal)
+      if (controller) {
+        pendingControllers.delete(controller)
+        controllerBySignal.delete(error.config.signal)
+      }
+    }
+
+    // 如果是取消请求，不处理错误
+    if (error.code === 'ERR_CANCELED' || error.name === 'CanceledError') {
+      return Promise.reject({ canceled: true, message: 'Request canceled' })
+    }
+
     const responseData = error.response?.data
     const requestUrl = error.config?.url || ''
     const originalRequest = error.config
@@ -2119,6 +2174,7 @@ const api = {
       turnstileSiteKey?: string | null
       ticketEnabled?: boolean
       freeSiteMode?: boolean
+      affRebateEnabled?: boolean
       mailAvailable?: boolean
       avatarApiBase?: string
       emailVerificationEnabled?: boolean
@@ -3351,6 +3407,19 @@ const api = {
       }
     }> => http.post(`/recharge/orders/${orderNo}/verify`),
 
+    // 兑换充值卡密
+    redeemRechargeCard: (cardNo: string, password: string): Promise<{
+      success: boolean
+      message: string
+      orderNo: string
+      amount: number
+      balance: number
+      card: {
+        cardNo: string
+        amount: number
+      }
+    }> => http.post('/recharge/cards/redeem', { cardNo, password }),
+
     // 获取套餐方案列表
     getPackagePlans: (packageId: number): Promise<{
       plans: Array<{
@@ -3439,6 +3508,71 @@ const api = {
     deletePaymentProvider: (id: number): Promise<{
       message: string
     }> => http.delete(`/admin/payment-providers/${id}`),
+
+    // ==================== 充值卡密管理 ====================
+
+    getRechargeCards: (params?: {
+      page?: number
+      pageSize?: number
+      status?: string
+      search?: string
+      batchNo?: string
+      createdById?: number | ''
+      usedById?: number | ''
+      minAmount?: number | ''
+      maxAmount?: number | ''
+      createdFrom?: string
+      createdTo?: string
+      usedFrom?: string
+      usedTo?: string
+      sortBy?: string
+      sortOrder?: string
+    }): Promise<{
+      cards: Array<{
+        id: number
+        cardNo: string
+        passwordMask: string
+        amount: number
+        batchNo: string
+        status: 'unused' | 'used'
+        createdBy: { id: number; username: string } | null
+        createdAt: string
+        usedBy: { id: number; username: string } | null
+        usedAt: string | null
+        rechargeRecordId: number | null
+      }>
+      total: number
+      page: number
+      pageSize: number
+    }> => http.get('/admin/recharge-cards', { params }),
+
+    createRechargeCards: (data: { amount: number; count: number }): Promise<{
+      success: boolean
+      message: string
+      batchNo: string
+      cards: Array<{
+        cardNo: string
+        password: string
+        amount: number
+      }>
+    }> => http.post('/admin/recharge-cards', data, { timeout: TIMEOUT.MEDIUM }),
+
+    deleteRechargeCard: (id: number): Promise<{
+      success: boolean
+      message: string
+    }> => http.delete(`/admin/recharge-cards/${id}`),
+
+    deleteRechargeCards: (ids: number[]): Promise<{
+      success: boolean
+      message: string
+      deleted: number
+      skippedUsed: number
+      notFound: number
+      deletedIds: number[]
+    }> => http.post('/admin/recharge-cards/delete', { ids }, { timeout: TIMEOUT.MEDIUM }),
+
+    exportRechargeCards: (ids: number[]): Promise<string> =>
+      http.post('/admin/recharge-cards/export', { ids }, { responseType: 'text', timeout: TIMEOUT.MEDIUM }),
 
     // ==================== 统计 ====================
 

@@ -2,7 +2,7 @@ import { createRouter, createWebHistory } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useConfigStore } from '@/stores/config'
 import type { RouteLocationNormalized, NavigationGuardNext, RouteRecordRaw } from 'vue-router'
-import api from '@/api'
+import api, { cancelAllPendingRequests } from '@/api'
 
 // OAuth 登录码处理状态
 let oauthProcessing = false
@@ -474,6 +474,11 @@ router.onError((error) => {
 
 // Route guard
 router.beforeEach(async (to: RouteLocationNormalized, _from: RouteLocationNormalized, next: NavigationGuardNext) => {
+  // 取消前一个页面的所有待处理请求，避免过期请求覆盖新数据
+  if (_from.name && _from.name !== to.name) {
+    cancelAllPendingRequests()
+  }
+
   const authStore = useAuthStore()
   const configStore = useConfigStore()
 

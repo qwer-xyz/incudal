@@ -10,6 +10,9 @@ const props = withDefaults(defineProps<{
 }>(), {
   embedded: false
 })
+const emit = defineEmits<{
+  changed: []
+}>()
 
 const { t } = useI18n()
 const toast = useToast()
@@ -42,7 +45,7 @@ const formData = ref({
 
 const DEFAULT_YIPAY_METHODS = ['alipay', 'wxpay']
 const YIPAY_METHODS = ['alipay', 'wxpay', 'qqpay']
-const IMPLEMENTED_PROVIDER_TYPES = new Set(['yipay', 'heleket'])
+const IMPLEMENTED_PROVIDER_TYPES = new Set(['yipay', 'heleket', 'recharge_card'])
 
 function getConfigMethodFees(config: Record<string, unknown>): Record<string, { feeRate?: number; feeFixed?: number }> {
   const raw = (config as any).methodFees
@@ -105,7 +108,8 @@ const providerTypes = computed(() => [
   { value: 'stripe', label: t('admin.paymentProviders.providerTypes.stripe') },
   { value: 'alipay_direct', label: t('admin.paymentProviders.providerTypes.alipayDirect') },
   { value: 'wechat_direct', label: t('admin.paymentProviders.providerTypes.wechatDirect') },
-  { value: 'manual', label: t('admin.paymentProviders.providerTypes.manual') }
+  { value: 'manual', label: t('admin.paymentProviders.providerTypes.manual') },
+  { value: 'recharge_card', label: t('admin.paymentProviders.providerTypes.rechargeCard') }
 ].map(option => {
   const implemented = IMPLEMENTED_PROVIDER_TYPES.has(option.value)
   return {
@@ -196,6 +200,8 @@ function getDefaultConfig(type: string, version?: string): Record<string, unknow
       return {
         instructions: ''
       }
+    case 'recharge_card':
+      return {}
     default:
       return {}
   }
@@ -297,8 +303,8 @@ async function saveProvider() {
       methods: formData.value.methods,
       minAmount: formData.value.minAmount,
       maxAmount: formData.value.maxAmount,
-      feeRate: formData.value.type === 'yipay' ? 0 : formData.value.feeRate / 100, // 转换回小数
-      feeFixed: formData.value.type === 'yipay' ? 0 : formData.value.feeFixed,
+      feeRate: formData.value.type === 'yipay' || formData.value.type === 'recharge_card' ? 0 : formData.value.feeRate / 100, // 转换回小数
+      feeFixed: formData.value.type === 'yipay' || formData.value.type === 'recharge_card' ? 0 : formData.value.feeFixed,
       sortOrder: formData.value.sortOrder
     }
     
@@ -312,6 +318,7 @@ async function saveProvider() {
     
     showModal.value = false
     await loadProviders()
+    emit('changed')
   } catch (err: any) {
     toast.error((isEditing.value ? t('admin.paymentProviders.updateFailed') : t('admin.paymentProviders.createFailed')) + ': ' + err.message)
   } finally {
@@ -324,6 +331,7 @@ async function updateStatus(provider: any, newStatus: string) {
     await api.admin.updatePaymentProviderStatus(provider.id, newStatus)
     toast.success(t('admin.paymentProviders.statusUpdateSuccess'))
     await loadProviders()
+    emit('changed')
   } catch (err: any) {
     toast.error(t('admin.paymentProviders.statusUpdateFailed') + ': ' + err.message)
   }
@@ -344,6 +352,7 @@ async function deleteProvider() {
     showDeleteModal.value = false
     deleteTarget.value = null
     await loadProviders()
+    emit('changed')
   } catch (err: any) {
     toast.error(t('admin.paymentProviders.deleteFailed') + ': ' + err.message)
   } finally {
@@ -689,7 +698,7 @@ function togglePaymentMethod(method: string) {
               </div>
             </div>
             
-            <div v-if="formData.type !== 'yipay'" class="grid grid-cols-2 gap-4">
+            <div v-if="formData.type !== 'yipay' && formData.type !== 'recharge_card'" class="grid grid-cols-2 gap-4">
               <div>
                 <label class="label">{{ $t('admin.paymentProviders.feeRate') }} (%)</label>
                 <input v-model.number="formData.feeRate" type="number" class="input w-full" min="0" max="100" step="0.01" />
@@ -700,7 +709,7 @@ function togglePaymentMethod(method: string) {
               </div>
             </div>
             <div v-else class="rounded-lg bg-themed-secondary px-3 py-2 text-xs text-themed-muted">
-              {{ $t('admin.paymentProviders.config.yipayFeeFieldHint') }}
+              {{ formData.type === 'recharge_card' ? $t('admin.paymentProviders.config.rechargeCardFeeFieldHint') : $t('admin.paymentProviders.config.yipayFeeFieldHint') }}
             </div>
             
             <div>

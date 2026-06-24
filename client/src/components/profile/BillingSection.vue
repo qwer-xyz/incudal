@@ -31,6 +31,8 @@ const rechargeLoading = ref(false)
 const providers = ref<any[]>([])
 const selectedProvider = ref<number | null>(null)
 const rechargeAmount = ref(10)
+const rechargeCardNo = ref('')
+const rechargeCardPassword = ref('')
 const agreedToTerms = ref(false)
 const showTermsModal = ref(false)
 // 支付方式选择
@@ -84,6 +86,9 @@ async function loadProviders() {
       selectedProvider.value = providers.value[0].id
       // 自动选中第一个支付方式
       updateDefaultPaymentMethod(providers.value[0])
+    } else {
+      selectedProvider.value = null
+      selectedPaymentMethod.value = ''
     }
   } catch (err: any) {
     toast.error(t('profile.billing.loadProvidersFailed') + ': ' + err.message)
@@ -92,7 +97,7 @@ async function loadProviders() {
 
 // 更新默认支付方式
 function updateDefaultPaymentMethod(provider: any) {
-  if (provider?.type === 'heleket') {
+  if (provider?.type === 'heleket' || provider?.type === 'recharge_card') {
     selectedPaymentMethod.value = ''
   } else if (provider && provider.methods && provider.methods.length > 0) {
     selectedPaymentMethod.value = provider.methods[0]
@@ -106,6 +111,10 @@ watch(selectedProvider, (newProviderId) => {
   if (newProviderId) {
     const provider = providers.value.find(p => p.id === newProviderId)
     updateDefaultPaymentMethod(provider)
+    if (provider?.type !== 'recharge_card') {
+      rechargeCardNo.value = ''
+      rechargeCardPassword.value = ''
+    }
   }
 })
 
@@ -141,6 +150,8 @@ function toggleRecords() {
 
 function openRechargeModal() {
   rechargeAmount.value = 10
+  rechargeCardNo.value = ''
+  rechargeCardPassword.value = ''
   agreedToTerms.value = false
   loadProviders()
   showRechargeModal.value = true
@@ -151,6 +162,36 @@ async function createRechargeOrder() {
     toast.error(t('profile.billing.selectProvider'))
     return
   }
+
+  const provider = providers.value.find(p => p.id === selectedProvider.value)
+  if (provider?.type === 'recharge_card') {
+    if (!rechargeCardNo.value.trim() || !rechargeCardPassword.value.trim()) {
+      toast.error(t('profile.billing.cardCredentialRequired'))
+      return
+    }
+
+    rechargeLoading.value = true
+    try {
+      const res = await api.billing.redeemRechargeCard(rechargeCardNo.value, rechargeCardPassword.value)
+      toast.success(res.message || t('profile.billing.cardRedeemSuccess'))
+      showRechargeModal.value = false
+      rechargeCardNo.value = ''
+      rechargeCardPassword.value = ''
+      await loadBalance()
+      if (showLogs.value) {
+        loadLogs()
+      }
+      if (showRecords.value) {
+        loadRecords()
+      }
+    } catch (err: any) {
+      toast.error(t('profile.billing.redeemCardFailed') + ': ' + err.message)
+    } finally {
+      rechargeLoading.value = false
+    }
+    return
+  }
+
   if (rechargeAmount.value <= 0) {
     toast.error(t('profile.billing.invalidAmount'))
     return
@@ -158,8 +199,6 @@ async function createRechargeOrder() {
 
   rechargeLoading.value = true
   try {
-    // 获取选中的支付方式
-    const provider = providers.value.find(p => p.id === selectedProvider.value)
     let paymentMethod = ''
     if (provider && provider.type !== 'heleket' && provider.methods && provider.methods.length > 0) {
       paymentMethod = selectedPaymentMethod.value || provider.methods[0]
@@ -277,9 +316,17 @@ function getRechargeGatewayStatusText(rec: any): string {
 const logsTotalPages = computed(() => Math.ceil(logsTotal.value / logsPageSize.value))
 const recordsTotalPages = computed(() => Math.ceil(recordsTotal.value / recordsPageSize.value))
 const selectedProviderInfo = computed(() => providers.value.find(p => p.id === selectedProvider.value))
+const isRechargeCardProvider = computed(() => selectedProviderInfo.value?.type === 'recharge_card')
+const rechargeSubmitDisabled = computed(() => {
+  if (rechargeLoading.value || !selectedProvider.value) return true
+  if (isRechargeCardProvider.value) {
+    return !rechargeCardNo.value.trim() || !rechargeCardPassword.value.trim()
+  }
+  return rechargeAmount.value <= 0 || !agreedToTerms.value
+})
 
 function getSelectedPaymentMethodForProvider(provider: any): string {
-  if (!provider || provider.type === 'heleket') return ''
+  if (!provider || provider.type === 'heleket' || provider.type === 'recharge_card') return ''
   if (!provider.methods || provider.methods.length === 0) return ''
   return selectedPaymentMethod.value || provider.methods[0]
 }
@@ -542,7 +589,7 @@ function formatAmount() {
             </div>
 
             <!-- 支付方式选择（仅当渠道支持多种方式时显示） -->
-            <div v-if="selectedProviderInfo && selectedProviderInfo.type !== 'heleket' && selectedProviderInfo.methods && selectedProviderInfo.methods.length > 1">
+            <div v-if="selectedProviderInfo && !isRechargeCardProvider && selectedProviderInfo.type !== 'heleket' && selectedProviderInfo.methods && selectedProviderInfo.methods.length > 1">
               <label class="label">{{ $t('wallet.paymentMethodType') }}</label>
               <div class="grid grid-cols-3 gap-2">
                 <button
@@ -563,8 +610,32 @@ function formatAmount() {
               {{ $t('wallet.heleketSelectionHint') }}
             </div>
 
+            <!-- 卡密兑换 -->
+            <div v-if="isRechargeCardProvider" class="space-y-3">
+              <div>
+                <label class="label">{{ $t('profile.billing.rechargeCardNo') }}</label>
+                <input
+                  v-model.trim="rechargeCardNo"
+                  type="text"
+                  class="input w-full font-mono uppercase"
+                  autocomplete="off"
+                  :placeholder="$t('profile.billing.rechargeCardNoPlaceholder')"
+                />
+              </div>
+              <div>
+                <label class="label">{{ $t('profile.billing.rechargeCardPassword') }}</label>
+                <input
+                  v-model.trim="rechargeCardPassword"
+                  type="password"
+                  class="input w-full font-mono"
+                  autocomplete="off"
+                  :placeholder="$t('profile.billing.rechargeCardPasswordPlaceholder')"
+                />
+              </div>
+            </div>
+
             <!-- 充值金额 -->
-            <div>
+            <div v-if="!isRechargeCardProvider">
               <label class="label">{{ $t('profile.billing.amount') }}</label>
               <div class="grid grid-cols-4 gap-2 mb-2">
                 <button
@@ -594,7 +665,7 @@ function formatAmount() {
             </div>
 
             <!-- 费用预览 -->
-            <div v-if="selectedProviderInfo && selectedRechargeFee > 0" class="rounded-lg border border-amber-500/20 bg-amber-500/10 p-3 text-sm text-amber-600 dark:text-amber-400">
+            <div v-if="!isRechargeCardProvider && selectedProviderInfo && selectedRechargeFee > 0" class="rounded-lg border border-amber-500/20 bg-amber-500/10 p-3 text-sm text-amber-600 dark:text-amber-400">
               <div>
                 {{ $t('profile.billing.feeNote') }}:
                 <span v-if="selectedFeeConfig.feeRate > 0" class="font-medium">{{ (selectedFeeConfig.feeRate * 100).toFixed(2) }}%</span>
@@ -610,7 +681,7 @@ function formatAmount() {
             </div>
 
             <!-- 服务条款勾选 -->
-            <div class="flex items-start gap-2">
+            <div v-if="!isRechargeCardProvider" class="flex items-start gap-2">
               <input
                 id="agree-terms-billing"
                 v-model="agreedToTerms"
@@ -634,10 +705,10 @@ function formatAmount() {
             <button class="btn btn-ghost" @click="showRechargeModal = false">{{ $t('common.cancel') }}</button>
             <button
               class="btn btn-primary"
-              :disabled="rechargeLoading || !selectedProvider || rechargeAmount <= 0 || !agreedToTerms"
+              :disabled="rechargeSubmitDisabled"
               @click="createRechargeOrder"
             >
-              {{ rechargeLoading ? $t('common.processing') : $t('profile.billing.pay') }}
+              {{ rechargeLoading ? $t('common.processing') : (isRechargeCardProvider ? $t('profile.billing.redeemCard') : $t('profile.billing.pay')) }}
             </button>
           </div>
         </div>

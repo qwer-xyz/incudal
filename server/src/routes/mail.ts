@@ -763,8 +763,9 @@ export default async function mailRoutes(fastify: FastifyInstance) {
     const originalPrice = Math.round(monthlyPrice * months * 100) / 100
 
     // 检查 AFF 绑定，计算折扣
-    const { getMailSubscriptionAffBinding, processMailAffCommission } = await import('../db/aff.js')
-    const affBinding = await getMailSubscriptionAffBinding(subscription.id)
+    const { getMailSubscriptionAffBinding, isAffRebateEnabled, processMailAffCommission } = await import('../db/aff.js')
+    const affEnabled = await isAffRebateEnabled()
+    const affBinding = affEnabled ? await getMailSubscriptionAffBinding(subscription.id) : null
     let discountRate = 0
     let discountAmount = 0
     let finalPrice = originalPrice
@@ -819,7 +820,7 @@ export default async function mailRoutes(fastify: FastifyInstance) {
       })
 
       // 如果有 AFF 绑定，给推荐人返利
-      if (affBinding) {
+      if (affEnabled && affBinding) {
         await processMailAffCommission(
           affBinding.affCode.id,
           subscription.id,

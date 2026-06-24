@@ -577,6 +577,19 @@ const isHostedMarketPackage = computed<boolean>(() => {
   return selectedPackage.value?.sourceType === 'market' || selectedPackage.value?.sourceType === 'zone'
 })
 
+const affPromoDisabled = computed<boolean>(() => !configStore.affRebateEnabled || isHostedMarketPackage.value)
+const affPromoDisabledMessage = computed<string>(() => {
+  if (!configStore.affRebateEnabled) return t('aff.promoCodeDisabledByAdmin')
+  if (isHostedMarketPackage.value) {
+    return configStore.freeSiteMode ? freeSiteCopy.createPromoHostedDisabled : t('aff.promoCodeHostedDisabled')
+  }
+  return ''
+})
+const affPromoPlaceholder = computed<string>(() => {
+  if (affPromoDisabledMessage.value) return affPromoDisabledMessage.value
+  return configStore.freeSiteMode ? freeSiteCopy.createPromoPlaceholder : t('aff.promoCodePlaceholder')
+})
+
 // 是否正在切换套餐（用于防止 watch 意外触发 loadAvailableHosts）
 const isSwitchingPackage = ref(false)
 
@@ -736,6 +749,11 @@ function resetPromoCode(): void {
  * 验证优惠码
  */
 async function verifyPromoCode(): Promise<void> {
+  if (affPromoDisabled.value) {
+    resetPromoCode()
+    return
+  }
+
   if (!form.value.promoCode.trim() || !form.value.planId) {
     resetPromoCode()
     return
@@ -955,7 +973,7 @@ async function handleSubmit(): Promise<void> {
       disk: form.value.disk,
       sshKeyId: form.value.sshKeyId,
       customInitCommandIds: form.value.customInitCommandIds.length > 0 ? form.value.customInitCommandIds : undefined,
-      promoCode: (isPaidPackage.value && promoCodeValid.value && form.value.promoCode.trim()) ? form.value.promoCode.trim() : undefined
+      promoCode: (configStore.affRebateEnabled && isPaidPackage.value && promoCodeValid.value && form.value.promoCode.trim()) ? form.value.promoCode.trim() : undefined
     } as CreateInstanceRequest & { promoCode?: string })
     
     toast.success(t('instance.createPage.createSuccess'))
@@ -1179,12 +1197,13 @@ async function handleSubmit(): Promise<void> {
                   <div>
                     <label class="label text-xs uppercase tracking-wide text-themed-muted mb-2">{{ configStore.freeSiteMode ? freeSiteCopy.createPromoCode : $t('aff.promoCode') }}</label>
                     <div class="relative">
-                      <input v-model="form.promoCode" type="text" class="input w-full pr-10" :placeholder="isHostedMarketPackage ? (configStore.freeSiteMode ? freeSiteCopy.createPromoHostedDisabled : $t('aff.promoCodeHostedDisabled')) : (configStore.freeSiteMode ? freeSiteCopy.createPromoPlaceholder : $t('aff.promoCodePlaceholder'))" :disabled="promoCodeVerifying || isHostedMarketPackage" @blur="verifyPromoCode" @keyup.enter="verifyPromoCode" />
+                      <input v-model="form.promoCode" type="text" class="input w-full pr-10" :placeholder="affPromoPlaceholder" :disabled="promoCodeVerifying || affPromoDisabled" @blur="verifyPromoCode" @keyup.enter="verifyPromoCode" />
                       <div v-if="promoCodeVerifying" class="absolute right-3 top-1/2 -translate-y-1/2"><svg class="w-5 h-5 animate-spin text-themed-muted" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg></div>
                       <div v-else-if="promoCodeValid === true" class="absolute right-3 top-1/2 -translate-y-1/2"><svg class="w-5 h-5 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" /></svg></div>
                       <div v-else-if="promoCodeValid === false" class="absolute right-3 top-1/2 -translate-y-1/2"><svg class="w-5 h-5 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" /></svg></div>
                     </div>
                     <p v-if="promoCodeValid === true" class="text-xs text-green-500 mt-1.5 flex items-center gap-1"><svg class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd" /></svg>{{ configStore.freeSiteMode ? freeSiteCopy.createPromoValid.replace('{rate}', (promoCodeDiscount * 100).toFixed(0) + '%') : $t('aff.promoCodeValid', { rate: (promoCodeDiscount * 100).toFixed(0) + '%' }) }}</p>
+                    <p v-else-if="affPromoDisabledMessage" class="text-xs text-themed-muted mt-1.5">{{ affPromoDisabledMessage }}</p>
                     <p v-else-if="promoCodeError" class="text-xs text-red-500 mt-1.5">{{ promoCodeError }}</p>
                   </div>
                   <div v-if="promoCodeValid === true" class="p-3 rounded-lg text-sm" :class="themeStore.isDark ? 'bg-blue-900/20 border border-blue-800/30 text-blue-300' : 'bg-blue-50 border border-blue-200 text-blue-700'">

@@ -12,6 +12,7 @@ import { calculateDiscountedPrice } from '@/utils/billing'
 
 const PaymentProvidersView = defineAsyncComponent(() => import('@/views/admin/PaymentProvidersView.vue'))
 const AffReviewView = defineAsyncComponent(() => import('@/views/admin/AffReviewView.vue'))
+const RechargeCardsView = defineAsyncComponent(() => import('@/views/admin/RechargeCardsView.vue'))
 
 type BatchPriceUpdateItemStatus = 'ready' | 'unchanged' | 'failed'
 
@@ -60,10 +61,19 @@ const { t } = useI18n()
 const toast = useToast()
 
 // Tab 切换
-type BillingTab = 'overview' | 'instances' | 'records' | 'rechargeRecords' | 'affConversions' | 'paymentProviders'
-const billingTabs: BillingTab[] = ['overview', 'instances', 'records', 'rechargeRecords', 'affConversions', 'paymentProviders']
+type BillingTab = 'overview' | 'instances' | 'records' | 'rechargeRecords' | 'rechargeCards' | 'affConversions' | 'paymentProviders'
+const allBillingTabs: BillingTab[] = ['overview', 'instances', 'records', 'rechargeRecords', 'rechargeCards', 'affConversions', 'paymentProviders']
+const hasActiveRechargeCardProvider = ref(false)
+const billingTabs = computed<BillingTab[]>(() => {
+  const tabs: BillingTab[] = ['overview', 'instances', 'records', 'rechargeRecords']
+  if (hasActiveRechargeCardProvider.value) {
+    tabs.push('rechargeCards')
+  }
+  tabs.push('affConversions', 'paymentProviders')
+  return tabs
+})
 function normalizeTab(tab: unknown): BillingTab {
-  return typeof tab === 'string' && billingTabs.includes(tab as BillingTab)
+  return typeof tab === 'string' && allBillingTabs.includes(tab as BillingTab)
     ? tab as BillingTab
     : 'overview'
 }
@@ -71,6 +81,7 @@ function normalizeTab(tab: unknown): BillingTab {
 const activeTab = ref<BillingTab>(normalizeTab(route.query.tab))
 const hasVisitedPaymentProviders = ref(activeTab.value === 'paymentProviders')
 const hasVisitedAffConversions = ref(activeTab.value === 'affConversions')
+const hasVisitedRechargeCards = ref(activeTab.value === 'rechargeCards')
 
 // 分页大小选项
 const pageSizeOptions = [10, 20, 50, 100]
@@ -514,11 +525,29 @@ function loadTabData(tab: BillingTab) {
   if (tab === 'rechargeRecords' && rechargeRecords.value.length === 0) {
     loadRechargeRecords()
   }
+  if (tab === 'rechargeCards') {
+    hasVisitedRechargeCards.value = true
+  }
 }
 
 onMounted(() => {
+  loadRechargeCardProviderState()
   loadTabData(activeTab.value)
 })
+
+async function loadRechargeCardProviderState() {
+  try {
+    const res = await api.admin.getPaymentProviders()
+    hasActiveRechargeCardProvider.value = (res.providers || []).some(provider =>
+      provider.type === 'recharge_card' && provider.status === 'active'
+    )
+    if (!hasActiveRechargeCardProvider.value && activeTab.value === 'rechargeCards') {
+      switchTab('paymentProviders')
+    }
+  } catch (err: any) {
+    console.warn('Failed to load recharge card provider state:', err)
+  }
+}
 
 async function loadOverview() {
   overviewLoading.value = true
@@ -618,6 +647,9 @@ function switchTab(tab: BillingTab) {
   }
   if (tab === 'affConversions') {
     hasVisitedAffConversions.value = true
+  }
+  if (tab === 'rechargeCards') {
+    hasVisitedRechargeCards.value = true
   }
   router.replace({
     path: route.path,
@@ -2050,9 +2082,14 @@ function copyToClipboard(text: string) {
       </div>
     </div>
 
+    <!-- 充值卡密 Tab -->
+    <div v-show="activeTab === 'rechargeCards'">
+      <RechargeCardsView v-if="hasVisitedRechargeCards" embedded />
+    </div>
+
     <!-- 支付渠道 Tab -->
     <div v-show="activeTab === 'paymentProviders'">
-      <PaymentProvidersView v-if="hasVisitedPaymentProviders" embedded />
+      <PaymentProvidersView v-if="hasVisitedPaymentProviders" embedded @changed="loadRechargeCardProviderState" />
     </div>
 
     <!-- AFF 转化 Tab -->

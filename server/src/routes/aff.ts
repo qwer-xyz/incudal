@@ -61,7 +61,7 @@ export default async function affRoutes(fastify: FastifyInstance) {
     // 检查是否已激活
     const activated = await db.isAffActivated(user.id)
     if (!activated) {
-      return reply.code(400).send({ error: '推荐计划尚未激活，请先充值任意金额' })
+      return reply.code(400).send({ error: 'AFF 返利暂未开启，暂时无法创建优惠码' })
     }
 
     const result = await db.getAvailablePlansForAffCode(user.id)

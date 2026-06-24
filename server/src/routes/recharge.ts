@@ -30,10 +30,22 @@ import { createLog } from '../db/logs.js'
 import { prisma } from '../db/prisma.js'
 import { createInboxMessage } from '../db/inbox.js'
 import { sendRechargeSuccessEmail } from '../lib/mailer.js'
+import {
+  buildRechargeCardExportCsv,
+  createRechargeCards,
+  deleteRechargeCard,
+  deleteRechargeCards,
+  exportRechargeCards,
+  listRechargeCards,
+  redeemRechargeCard,
+  type RechargeCardListOptions,
+  type RechargeCardSortBy,
+  type RechargeCardSortOrder
+} from '../services/recharge-cards.js'
 
 // 金额一致性检查容差（分）
 const AMOUNT_TOLERANCE_CENTS = 1
-const SUPPORTED_RECHARGE_PROVIDER_TYPES = new Set(['yipay', 'heleket'])
+const SUPPORTED_RECHARGE_PROVIDER_TYPES = new Set(['yipay', 'heleket', 'recharge_card'])
 const HELEKET_CALLBACK_IPS = ['31.133.220.8']
 
 function isRechargeProviderTypeSupported(type: string): boolean {
@@ -42,6 +54,65 @@ function isRechargeProviderTypeSupported(type: string): boolean {
 
 function getUnsupportedProviderError(type: string): string {
   return `支付渠道类型 ${type} 当前未实现安全的充值流程，暂不支持启用`
+}
+
+function getRechargeCardErrorResponse(error: unknown): { status: number; body: { error: string; code: string } } {
+  const code = error instanceof Error ? error.message : String(error)
+  switch (code) {
+    case 'INVALID_CARD_CREDENTIAL':
+      return { status: 400, body: { error: '卡密编号或密码不能为空', code } }
+    case 'RECHARGE_CARD_PROVIDER_DISABLED':
+      return { status: 403, body: { error: '卡密充值渠道未启用', code } }
+    case 'RECHARGE_CARD_NOT_FOUND':
+      return { status: 404, body: { error: '卡密不存在', code } }
+    case 'RECHARGE_CARD_PASSWORD_INVALID':
+      return { status: 400, body: { error: '卡密密码错误', code } }
+    case 'RECHARGE_CARD_ALREADY_USED':
+    case 'CARD_ALREADY_USED':
+      return { status: 409, body: { error: '卡密已使用', code } }
+    case 'INVALID_AMOUNT':
+      return { status: 400, body: { error: '卡密金额无效', code } }
+    case 'INVALID_COUNT':
+      return { status: 400, body: { error: '生成数量无效', code } }
+    default:
+      return { status: 500, body: { error: '卡密操作失败', code: 'RECHARGE_CARD_OPERATION_FAILED' } }
+  }
+}
+
+function parsePositiveInt(value: unknown): number | undefined {
+  if (value === undefined || value === null || value === '') return undefined
+  const parsed = Number(value)
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined
+}
+
+function parseMoneyFilter(value: unknown): number | undefined {
+  if (value === undefined || value === null || value === '') return undefined
+  const parsed = Number(value)
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined
+}
+
+function parseDateFilter(value: unknown): Date | undefined {
+  if (typeof value !== 'string' || !value.trim()) return undefined
+  const parsed = new Date(value)
+  return Number.isNaN(parsed.getTime()) ? undefined : parsed
+}
+
+function parseRechargeCardSortBy(value: unknown): RechargeCardSortBy | undefined {
+  return value === 'createdAt' || value === 'amount' || value === 'usedAt' || value === 'status'
+    ? value
+    : undefined
+}
+
+function parseRechargeCardSortOrder(value: unknown): RechargeCardSortOrder | undefined {
+  return value === 'asc' || value === 'desc' ? value : undefined
+}
+
+function parseRechargeCardIds(value: unknown): number[] {
+  if (!Array.isArray(value)) return []
+  return Array.from(new Set(value
+    .map(item => Number(item))
+    .filter(item => Number.isInteger(item) && item > 0)
+  )).slice(0, 1000)
 }
 
 /**
@@ -408,6 +479,10 @@ function validateActiveRechargeProvider(
     return { valid: false, error: getUnsupportedProviderError(provider.type) }
   }
 
+  if (provider.type === 'recharge_card') {
+    return { valid: true }
+  }
+
   if (provider.type === 'yipay') {
     const { valid, error } = buildEpayConfig(provider.config)
     return { valid, error }
@@ -426,6 +501,10 @@ function validatePaymentProviderAdminInput(
   config: Record<string, unknown>,
   status: 'active' | 'disabled' | 'testing'
 ): { valid: boolean; error?: string } {
+  if (providerType === 'recharge_card') {
+    return { valid: true }
+  }
+
   if (providerType === 'yipay') {
     const methodFeesValidation = validateYipayMethodFees(config)
     if (!methodFeesValidation.valid) {
@@ -626,6 +705,12 @@ export default async function rechargeRoutes(app: FastifyInstance): Promise<void
       if (!provider || provider.status !== 'active') {
         return reply.status(400).send({ error: '支付渠道不可用' })
       }
+      if (provider.type === 'recharge_card') {
+        return reply.status(400).send({
+          error: '卡密充值请使用卡密兑换入口',
+          code: 'RECHARGE_CARD_REDEEM_REQUIRED'
+        })
+      }
 
       const providerConfig = typeof provider.config === 'string'
         ? JSON.parse(provider.config)
@@ -723,6 +808,56 @@ export default async function rechargeRoutes(app: FastifyInstance): Promise<void
     } catch (error) {
       request.log.error(error, '创建充值订单失败')
       return reply.status(500).send({ error: '创建充值订单失败' })
+    }
+  })
+
+  // 兑换充值卡密
+  app.post('/api/recharge/cards/redeem', {
+    onRequest: [app.authenticate],
+    config: { rateLimit: { max: 5, timeWindow: '1 minute' } }
+  }, async (request, reply) => {
+    try {
+      if (await db.getSystemConfigBoolean('free_site_mode', false)) {
+        return reply.status(403).send({ error: '白嫖站已启用，充值功能不可用', code: 'FEATURE_DISABLED' })
+      }
+
+      const user = request.user!
+      const { cardNo, password } = request.body as { cardNo?: string; password?: string }
+      const result = await redeemRechargeCard({
+        userId: user.id,
+        cardNo: cardNo || '',
+        password: password || '',
+        ip: request.ip,
+        userAgent: request.headers['user-agent']
+      })
+
+      await createLog(
+        user.id,
+        'user',
+        'recharge_card.redeem',
+        `Recharge card redeemed: card ${result.card.cardNo}, amount ${result.amount}, order ${result.orderNo}`,
+        'success'
+      )
+
+      return {
+        success: true,
+        message: '卡密兑换成功',
+        card: {
+          cardNo: result.card.cardNo,
+          amount: result.amount
+        },
+        orderNo: result.orderNo,
+        amount: result.amount,
+        balance: result.balance
+      }
+    } catch (error) {
+      const response = getRechargeCardErrorResponse(error)
+      if (response.status >= 500) {
+        request.log.error(error, '卡密兑换失败')
+      } else {
+        request.log.warn({ code: response.body.code }, '卡密兑换被拒绝')
+      }
+      return reply.status(response.status).send(response.body)
     }
   })
 
@@ -1631,6 +1766,178 @@ export default async function rechargeRoutes(app: FastifyInstance): Promise<void
     } catch (error) {
       request.log.error(error, '删除支付渠道失败')
       return reply.status(500).send({ error: '删除支付渠道失败' })
+    }
+  })
+
+  // 获取充值卡密列表（管理员）
+  app.get('/api/admin/recharge-cards', {
+    onRequest: [app.authenticateAdmin]
+  }, async (request, reply) => {
+    try {
+      const query = request.query as Record<string, unknown>
+      const options: RechargeCardListOptions = {
+        page: parsePositiveInt(query.page) || 1,
+        pageSize: parsePositiveInt(query.pageSize) || 20,
+        status: query.status === 'unused' || query.status === 'used' ? query.status : undefined,
+        search: typeof query.search === 'string' ? query.search : undefined,
+        batchNo: typeof query.batchNo === 'string' ? query.batchNo : undefined,
+        createdById: parsePositiveInt(query.createdById),
+        usedById: parsePositiveInt(query.usedById),
+        minAmount: parseMoneyFilter(query.minAmount),
+        maxAmount: parseMoneyFilter(query.maxAmount),
+        createdFrom: parseDateFilter(query.createdFrom),
+        createdTo: parseDateFilter(query.createdTo),
+        usedFrom: parseDateFilter(query.usedFrom),
+        usedTo: parseDateFilter(query.usedTo),
+        sortBy: parseRechargeCardSortBy(query.sortBy),
+        sortOrder: parseRechargeCardSortOrder(query.sortOrder)
+      }
+
+      return await listRechargeCards(options)
+    } catch (error) {
+      request.log.error(error, '获取充值卡密列表失败')
+      return reply.status(500).send({ error: '获取充值卡密列表失败' })
+    }
+  })
+
+  // 生成充值卡密（管理员）
+  app.post('/api/admin/recharge-cards', {
+    onRequest: [app.authenticateAdmin],
+    config: { rateLimit: { max: 5, timeWindow: '1 minute' } }
+  }, async (request, reply) => {
+    try {
+      const admin = request.user!
+      const { amount, count } = request.body as { amount?: number; count?: number }
+      const result = await createRechargeCards({
+        amount: Number(amount),
+        count: count === undefined ? 1 : Number(count),
+        adminId: admin.id
+      })
+
+      await createLog(
+        admin.id,
+        'admin',
+        'recharge_card.create',
+        `Admin generated recharge card batch ${result.batchNo}, count ${result.cards.length}, amount ${result.cards[0]?.amount ?? 0}`,
+        'success'
+      )
+
+      return {
+        success: true,
+        message: '卡密生成成功',
+        batchNo: result.batchNo,
+        cards: result.cards
+      }
+    } catch (error) {
+      const response = getRechargeCardErrorResponse(error)
+      if (response.status >= 500) {
+        request.log.error(error, '生成充值卡密失败')
+      }
+      return reply.status(response.status).send(response.body)
+    }
+  })
+
+  // 导出选中的充值卡密（管理员，不包含完整密码）
+  app.post('/api/admin/recharge-cards/export', {
+    onRequest: [app.authenticateAdmin],
+    config: { rateLimit: { max: 10, timeWindow: '1 minute' } }
+  }, async (request, reply) => {
+    try {
+      const admin = request.user!
+      const { ids } = request.body as { ids?: unknown[] }
+      const cardIds = parseRechargeCardIds(ids)
+      if (cardIds.length === 0) {
+        return reply.status(400).send({ error: '请选择要导出的卡密', code: 'INVALID_RECHARGE_CARD_IDS' })
+      }
+
+      const rows = await exportRechargeCards(cardIds)
+      const csv = buildRechargeCardExportCsv(rows)
+
+      await createLog(
+        admin.id,
+        'admin',
+        'recharge_card.export',
+        `Admin exported recharge cards, selected ${cardIds.length}, exported ${rows.length}`,
+        'success'
+      )
+
+      return reply
+        .header('Content-Type', 'text/csv; charset=utf-8')
+        .header('Content-Disposition', `attachment; filename="recharge-cards-${Date.now()}.csv"`)
+        .send(csv)
+    } catch (error) {
+      request.log.error(error, '导出充值卡密失败')
+      return reply.status(500).send({ error: '导出充值卡密失败' })
+    }
+  })
+
+  // 批量删除未使用充值卡密（管理员）
+  app.post('/api/admin/recharge-cards/delete', {
+    onRequest: [app.authenticateAdmin],
+    config: { rateLimit: { max: 10, timeWindow: '1 minute' } }
+  }, async (request, reply) => {
+    try {
+      const admin = request.user!
+      const { ids } = request.body as { ids?: unknown[] }
+      const cardIds = parseRechargeCardIds(ids)
+      if (cardIds.length === 0) {
+        return reply.status(400).send({ error: '请选择要删除的卡密', code: 'INVALID_RECHARGE_CARD_IDS' })
+      }
+
+      const result = await deleteRechargeCards(cardIds)
+
+      await createLog(
+        admin.id,
+        'admin',
+        'recharge_card.bulk_delete',
+        `Admin bulk deleted recharge cards, selected ${cardIds.length}, deleted ${result.deleted}, skippedUsed ${result.skippedUsed}, notFound ${result.notFound}`,
+        'success'
+      )
+
+      return {
+        success: true,
+        message: '批量删除完成',
+        ...result
+      }
+    } catch (error) {
+      request.log.error(error, '批量删除充值卡密失败')
+      return reply.status(500).send({ error: '批量删除充值卡密失败' })
+    }
+  })
+
+  // 删除未使用充值卡密（管理员）
+  app.delete('/api/admin/recharge-cards/:id', {
+    onRequest: [app.authenticateAdmin],
+    config: { rateLimit: { max: 20, timeWindow: '1 minute' } }
+  }, async (request, reply) => {
+    try {
+      const admin = request.user!
+      const { id } = request.params as { id: string }
+      const cardId = parseInt(id, 10)
+      if (!Number.isInteger(cardId) || cardId <= 0) {
+        return reply.status(400).send({ error: '无效的卡密ID', code: 'INVALID_RECHARGE_CARD_ID' })
+      }
+
+      const deleted = await deleteRechargeCard(cardId)
+      if (!deleted) {
+        return reply.status(404).send({ error: '卡密不存在', code: 'RECHARGE_CARD_NOT_FOUND' })
+      }
+
+      await createLog(
+        admin.id,
+        'admin',
+        'recharge_card.delete',
+        `Admin deleted unused recharge card ${cardId}`,
+        'success'
+      )
+
+      return { success: true, message: '卡密已删除' }
+    } catch (error) {
+      const response = getRechargeCardErrorResponse(error)
+      if (response.status >= 500) {
+        request.log.error(error, '删除充值卡密失败')
+      }
+      return reply.status(response.status).send(response.body)
     }
   })
 

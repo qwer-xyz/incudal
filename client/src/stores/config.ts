@@ -30,6 +30,7 @@ export const useConfigStore = defineStore('config', () => {
     const requireInviteCode = ref(true)
     const ticketEnabled = ref(true)
     const freeSiteMode = ref(false)
+    const affRebateEnabled = ref(false)
     const mailAvailable = ref(true)
     const turnstileEnabled = ref(false)
     const turnstileSiteKey = ref<string | null>(null)
@@ -53,6 +54,7 @@ export const useConfigStore = defineStore('config', () => {
             requireInviteCode.value = config.requireInviteCode
             ticketEnabled.value = config.ticketEnabled ?? true
             freeSiteMode.value = config.freeSiteMode ?? false
+            affRebateEnabled.value = config.affRebateEnabled ?? false
             mailAvailable.value = config.mailAvailable ?? true
             turnstileEnabled.value = config.turnstileEnabled || false
             turnstileSiteKey.value = config.turnstileSiteKey || null
@@ -85,6 +87,7 @@ export const useConfigStore = defineStore('config', () => {
         requireInviteCode,
         ticketEnabled,
         freeSiteMode,
+        affRebateEnabled,
         mailAvailable,
         turnstileEnabled,
         turnstileSiteKey,

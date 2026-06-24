@@ -10,6 +10,12 @@ import { useAuthStore } from '@/stores/auth'
 import type { Host, HostWithDetails, Package, CreatePackageRequest, UpdatePackageRequest } from '@/types/api'
 import { validateName, validateText } from '@/utils/validation'
 import { translateError } from '@/utils/errorHandler'
+import {
+  canSelectPackageUsageMode,
+  getPackageUsageModeFromPlanSummary,
+  shouldShowPackageLevelInstanceDefaults,
+  type PackageUsageMode
+} from '@/utils/packageUsageMode'
 
 // 为 KeepAlive exclude 匹配定义组件名称
 defineOptions({
@@ -38,9 +44,10 @@ const authStore = useAuthStore()
 // Mode: create or edit
 const isEditMode = computed(() => props.packageId !== null || !!route.params.id)
 const packageId = computed(() => props.packageId ?? (route.params.id ? Number(route.params.id) : null))
-type PackageCreationMode = 'free' | 'paid'
-const packageCreationMode = ref<PackageCreationMode>('free')
-const showPackageLevelInstanceDefaults = computed(() => isEditMode.value || packageCreationMode.value === 'free')
+const packageCreationMode = ref<PackageUsageMode>('free')
+const loadedPackagePlanSummary = ref<Package['planSummary'] | null>(null)
+const showPackageLevelInstanceDefaults = computed(() => shouldShowPackageLevelInstanceDefaults(packageCreationMode.value))
+const canSelectFreePackageMode = computed(() => canSelectPackageUsageMode(loadedPackagePlanSummary.value, 'free'))
 
 // Loading states
 const loading = ref(false)
@@ -222,11 +229,13 @@ function resetPackageLevelInstanceDefaults(): void {
   form.value.limitsEgressUnit = defaults.limitsEgressUnit
 }
 
-watch(packageCreationMode, (mode) => {
-  if (!isEditMode.value && mode === 'paid') {
+function selectPackageCreationMode(mode: PackageUsageMode): void {
+  if (!canSelectPackageUsageMode(loadedPackagePlanSummary.value, mode)) return
+  if (mode === 'paid' && packageCreationMode.value !== 'paid') {
     resetPackageLevelInstanceDefaults()
   }
-})
+  packageCreationMode.value = mode
+}
 
 watch(() => form.value.globalShared, (globalShared) => {
   if (globalShared) {
@@ -518,6 +527,7 @@ watch(() => route.params.id, async (newId, oldId) => {
     } else {
       // 切换到创建模式
       form.value = getDefaultForm()
+      loadedPackagePlanSummary.value = null
       packageCreationMode.value = 'free'
       currentPackageOwnerId.value = authStore.user?.id ?? null
       await loadPrerequisitePackages()
@@ -566,6 +576,8 @@ async function loadPackage(id: number): Promise<void> {
     // API 返回 { package: {...} } 格式
     const pkg = response.package || response
     currentPackageOwnerId.value = pkg.ownerId ?? pkg.user_id ?? authStore.user?.id ?? null
+    loadedPackagePlanSummary.value = pkg.planSummary ?? null
+    packageCreationMode.value = getPackageUsageModeFromPlanSummary(loadedPackagePlanSummary.value)
     
     // Parse storage I/O values
     const readParsed = parseStorageValue(pkg.limits_read)
@@ -847,18 +859,20 @@ function goBack(): void {
             <label class="block text-xs text-themed-muted mb-1.5">{{ t('admin.packages.descLabel') }}</label>
             <input v-model="form.description" type="text" class="input" />
           </div>
-          <div v-if="!isEditMode" class="md:col-span-2">
+          <div class="md:col-span-2">
             <label class="block text-xs text-themed-muted mb-2">{{ t('packageForm.fields.packageCreationMode') }}</label>
             <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <button
                 type="button"
-                class="p-4 rounded-lg border-2 transition-all text-left cursor-pointer"
+                class="p-4 rounded-lg border-2 transition-all text-left"
+                :disabled="!canSelectFreePackageMode"
                 :class="[
                   packageCreationMode === 'free'
                     ? (themeStore.isDark ? 'border-teal-500 bg-teal-900/20 ring-2 ring-teal-500/30' : 'border-teal-500 bg-teal-50 ring-2 ring-teal-200')
-                    : (themeStore.isDark ? 'border-gray-700 bg-gray-900/30 hover:border-gray-600' : 'border-gray-200 bg-gray-50 hover:border-gray-300')
+                    : (themeStore.isDark ? 'border-gray-700 bg-gray-900/30 hover:border-gray-600' : 'border-gray-200 bg-gray-50 hover:border-gray-300'),
+                  canSelectFreePackageMode ? 'cursor-pointer' : 'cursor-not-allowed opacity-60'
                 ]"
-                @click="packageCreationMode = 'free'"
+                @click="selectPackageCreationMode('free')"
               >
                 <div class="flex items-center gap-2 mb-2">
                   <svg class="w-5 h-5" :class="packageCreationMode === 'free' ? 'text-teal-500' : 'text-themed-muted'" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -880,7 +894,7 @@ function goBack(): void {
                     ? (themeStore.isDark ? 'border-amber-500 bg-amber-900/20 ring-2 ring-amber-500/30' : 'border-amber-500 bg-amber-50 ring-2 ring-amber-200')
                     : (themeStore.isDark ? 'border-gray-700 bg-gray-900/30 hover:border-gray-600' : 'border-gray-200 bg-gray-50 hover:border-gray-300')
                 ]"
-                @click="packageCreationMode = 'paid'"
+                @click="selectPackageCreationMode('paid')"
               >
                 <div class="flex items-center gap-2 mb-2">
                   <svg class="w-5 h-5" :class="packageCreationMode === 'paid' ? 'text-amber-500' : 'text-themed-muted'" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -906,7 +920,13 @@ function goBack(): void {
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M12 2a10 10 0 100 20 10 10 0 000-20z" />
                 </svg>
                 <p class="text-xs leading-relaxed">
-                  {{ packageCreationMode === 'free' ? t('packageForm.hints.freePackageCreationMode') : t('packageForm.hints.paidPackageCreationMode') }}
+                  {{
+                    !canSelectFreePackageMode && packageCreationMode === 'paid'
+                      ? t('packageForm.hints.paidPackageLockedToPlans')
+                      : packageCreationMode === 'free'
+                        ? t('packageForm.hints.freePackageCreationMode')
+                        : t('packageForm.hints.paidPackageCreationMode')
+                  }}
                 </p>
               </div>
             </div>

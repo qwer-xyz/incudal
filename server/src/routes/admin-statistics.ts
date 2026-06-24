@@ -107,12 +107,21 @@ function scalarValue(rows: ScalarRow[], money = false): number {
   return money ? roundMoney(value) : value
 }
 
+// 统计数据缓存 - 60 秒 TTL，减少重复复杂查询
+let statsOverviewCache: { data: Record<string, unknown>; expiresAt: number } | null = null
+const STATS_CACHE_TTL_MS = 60_000 // 60 秒
+
 export default async function adminStatisticsRoutes(app: FastifyInstance): Promise<void> {
   // GET /api/admin/statistics/overview - 管理员统计概览
   app.get('/api/admin/statistics/overview', {
     onRequest: [app.authenticate, app.requireAdmin],
     config: { rateLimit: { max: 30, timeWindow: '1 minute' } }
   }, async (request, reply) => {
+    // 检查缓存
+    if (statsOverviewCache && statsOverviewCache.expiresAt > Date.now()) {
+      return statsOverviewCache.data
+    }
+
     try {
       const dailyWindow = getDailyWindow(DAILY_DAYS)
       const monthlyWindow = getMonthlyWindow(MONTHLY_MONTHS)
@@ -282,7 +291,7 @@ export default async function adminStatisticsRoutes(app: FastifyInstance): Promi
         `)
       ])
 
-      return {
+      const result = {
         meta: {
           timezone: BUSINESS_TIMEZONE,
           dailyDays: DAILY_DAYS,
@@ -318,6 +327,10 @@ export default async function adminStatisticsRoutes(app: FastifyInstance): Promi
           monthlyDestroyFee: fillSeries(monthlyDestroyFee, monthlyWindow.labels, true)
         }
       }
+
+      // 缓存结果
+      statsOverviewCache = { data: result, expiresAt: Date.now() + STATS_CACHE_TTL_MS }
+      return result
     } catch (error) {
       request.log.error(error, '获取统计数据失败')
       return reply.status(500).send({ error: '获取统计数据失败' })

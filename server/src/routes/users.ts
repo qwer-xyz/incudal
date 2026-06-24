@@ -11,6 +11,7 @@ import { createLog } from '../db/logs.js'
 import type { UpdateUserRequest } from '../types/api.js'
 import { apiError, ErrorCode } from '../lib/errors.js'
 import { containsDangerousChars, revokeAllUserRefreshTokens, getUserSessions, logAdminAction, validatePassword, invalidateUserAccessTokens } from '../lib/security.js'
+import { clearAuthCache } from '../plugins/auth-decorators.js'
 import {
     isOperationVerified,
     consumeOperationVerification
@@ -805,6 +806,8 @@ export default async function userRoutes(fastify: FastifyInstance) {
         await revokeAllUserRefreshTokens(userId)
         await invalidateUserAccessTokens(userId)
         closeUserSessions(userId, 'Password updated')
+        // 清除认证缓存，确保令牌失效立即生效
+        clearAuthCache(userId)
       }
 
       const updateActions: string[] = []
@@ -993,6 +996,9 @@ export default async function userRoutes(fastify: FastifyInstance) {
         role: roleUpdate.role
       }
     }
+
+    // 清除认证缓存，确保角色变更立即生效
+    clearAuthCache(userId)
 
     const closedTerminals = closeUserSessions(userId, 'User role changed by admin')
     if (closedTerminals > 0) {
@@ -1207,6 +1213,8 @@ export default async function userRoutes(fastify: FastifyInstance) {
     }
 
     await db.updateUserStatus(userId, status, reason)
+    // 清除认证缓存，确保状态变更立即生效
+    clearAuthCache(userId)
 
     // 如果是封禁用户，关闭该用户的所有终端连接
     if (status === 'banned') {
@@ -1344,6 +1352,8 @@ export default async function userRoutes(fastify: FastifyInstance) {
 
     const count = await revokeAllUserRefreshTokens(userId)
     await invalidateUserAccessTokens(userId)
+    // 清除认证缓存，确保令牌失效立即生效
+    clearAuthCache(userId)
 
     // 关闭该用户的所有终端连接
     const closedTerminals = closeUserSessions(userId, 'Sessions revoked by admin')
@@ -1402,6 +1412,8 @@ export default async function userRoutes(fastify: FastifyInstance) {
     await revokeAllUserRefreshTokens(userId)
     await invalidateUserAccessTokens(userId)
     closeUserSessions(userId, 'Password reset by admin')
+    // 清除认证缓存，确保令牌失效立即生效
+    clearAuthCache(userId)
 
     await createLog(
       request.user.id,

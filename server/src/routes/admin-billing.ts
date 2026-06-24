@@ -1518,6 +1518,11 @@ export default async function adminBillingRoutes(app: FastifyInstance): Promise<
     }
 
     try {
+      const affActivated = await db.isAffActivated(admin.id)
+      if (!affActivated) {
+        return reply.status(400).send({ error: 'AFF 返利暂未开启，暂时无法使用优惠码' })
+      }
+
       // 1. 获取实例信息
       const instance = await prisma.instance.findUnique({
         where: { id: instanceId },
@@ -1554,6 +1559,10 @@ export default async function adminBillingRoutes(app: FastifyInstance): Promise<
 
       if (!affCode) {
         return reply.status(400).send({ error: '优惠码不存在' })
+      }
+
+      if (!affCode.enabled) {
+        return reply.status(400).send({ error: '优惠码已停用' })
       }
 
       // 4. 检查AFF码创建者不能是实例所有者（防止自返利）
@@ -2160,7 +2169,7 @@ export default async function adminBillingRoutes(app: FastifyInstance): Promise<
         ]
       }
 
-      const [instances, total, hostsWithPaidInstances] = await Promise.all([
+      const [instances, total, hostsWithPaidInstances, affEnabled] = await Promise.all([
         prisma.instance.findMany({
           where,
           include: {
@@ -2202,7 +2211,8 @@ export default async function adminBillingRoutes(app: FastifyInstance): Promise<
             host: { select: { id: true, name: true } }
           },
           distinct: ['hostId']
-        })
+        }),
+        db.isAffRebateEnabled()
       ])
 
       return {
@@ -2226,7 +2236,7 @@ export default async function adminBillingRoutes(app: FastifyInstance): Promise<
           const affBinding = (inst as any).affBinding
           const hasAffBinding = !!affBinding
           // 只有当优惠码启用时才返回折扣率
-          const affDiscountRate = hasAffBinding && affBinding.affCode?.enabled
+          const affDiscountRate = affEnabled && hasAffBinding && affBinding.affCode?.enabled
             ? Number(affBinding.affCode.discountRate) || 0
             : 0
 

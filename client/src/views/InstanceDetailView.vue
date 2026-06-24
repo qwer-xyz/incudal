@@ -2240,6 +2240,7 @@ function canApplyAffCode(inst: InstanceWithDetails | null): boolean {
   if (!inst || isHostOwnerOnly.value) return false
   const instAny = inst as any
   return Boolean(instAny.packagePlanId && instAny.expires_at)
+    && configStore.affRebateEnabled
     && !hasAffBinding(inst)
     && !isHostedInstanceForAff(inst)
 }
@@ -3197,6 +3198,8 @@ function formatShortDate(dateStr: string | null | undefined): string {
       :instance-name="instance.name"
       :renew-price="getRenewPrice(instance)"
       :billing-cycle-label="getBillingCycleShort((instance as any).billingCycle)"
+      :disabled="!configStore.affRebateEnabled"
+      :disabled-reason="$t('instance.subscription.applyAffDisabledByAdmin')"
       @success="handleApplyAffSuccess"
     />
 

@@ -63,6 +63,8 @@ const rechargeLoading = ref(false)
 const providers = ref<any[]>([])
 const selectedProvider = ref<number | null>(null)
 const rechargeAmount = ref(10)
+const rechargeCardNo = ref('')
+const rechargeCardPassword = ref('')
 // 新增：支付方式选择
 const selectedPaymentMethod = ref<string>('')
 // 服务条款勾选
@@ -288,6 +290,9 @@ async function loadProviders() {
       selectedProvider.value = providers.value[0].id
       // 自动选中第一个支付方式
       updateDefaultPaymentMethod(providers.value[0])
+    } else {
+      selectedProvider.value = null
+      selectedPaymentMethod.value = ''
     }
   } catch (err: any) {
     toast.error(t('wallet.loadProvidersFailed') + ': ' + err.message)
@@ -296,7 +301,7 @@ async function loadProviders() {
 
 // 更新默认支付方式
 function updateDefaultPaymentMethod(provider: any) {
-  if (provider?.type === 'heleket') {
+  if (provider?.type === 'heleket' || provider?.type === 'recharge_card') {
     selectedPaymentMethod.value = ''
   } else if (provider && provider.methods && provider.methods.length > 0) {
     selectedPaymentMethod.value = provider.methods[0]
@@ -310,6 +315,10 @@ watch(selectedProvider, (newProviderId) => {
   if (newProviderId) {
     const provider = providers.value.find(p => p.id === newProviderId)
     updateDefaultPaymentMethod(provider)
+    if (provider?.type !== 'recharge_card') {
+      rechargeCardNo.value = ''
+      rechargeCardPassword.value = ''
+    }
   }
 })
 
@@ -382,6 +391,8 @@ function switchTab(tab: WalletTab) {
 function openRechargeModal() {
   if (configStore.freeSiteMode) return
   rechargeAmount.value = 10
+  rechargeCardNo.value = ''
+  rechargeCardPassword.value = ''
   agreedToTerms.value = false
   agreedToNoRefund.value = false
   agreedToRechargeNotice.value = false
@@ -396,6 +407,34 @@ async function createRechargeOrder() {
     toast.error(t('wallet.selectProvider'))
     return
   }
+
+  const provider = providers.value.find(p => p.id === selectedProvider.value)
+  if (provider?.type === 'recharge_card') {
+    if (!rechargeCardNo.value.trim() || !rechargeCardPassword.value.trim()) {
+      toast.error(t('wallet.cardCredentialRequired'))
+      return
+    }
+
+    rechargeLoading.value = true
+    try {
+      await api.billing.redeemRechargeCard(rechargeCardNo.value, rechargeCardPassword.value)
+      toast.success(t('wallet.cardRedeemSuccess'))
+      showRechargeModal.value = false
+      rechargeCardNo.value = ''
+      rechargeCardPassword.value = ''
+      await loadBalance()
+      loadRecords()
+      if (activeTab.value === 'logs') {
+        loadLogs()
+      }
+    } catch (err: any) {
+      toast.error(t('wallet.redeemCardFailed') + ': ' + err.message)
+    } finally {
+      rechargeLoading.value = false
+    }
+    return
+  }
+
   if (rechargeAmount.value <= 0) {
     toast.error(t('wallet.invalidAmount'))
     return
@@ -403,8 +442,6 @@ async function createRechargeOrder() {
 
   rechargeLoading.value = true
   try {
-    // 获取选中的支付方式
-    const provider = providers.value.find(p => p.id === selectedProvider.value)
     let paymentMethod = ''
     if (provider && provider.type !== 'heleket' && provider.methods && provider.methods.length > 0) {
       // 如果用户选择了特定支付方式，使用该方式；否则使用默认第一个
@@ -608,8 +645,17 @@ function getWithdrawalStatusTagClass(status: string): string {
 const logsTotalPages = computed(() => Math.ceil(logsTotal.value / logsPageSize.value))
 const recordsTotalPages = computed(() => Math.ceil(recordsTotal.value / recordsPageSize.value))
 const selectedProviderInfo = computed(() => providers.value.find(p => p.id === selectedProvider.value))
+const isRechargeCardProvider = computed(() => selectedProviderInfo.value?.type === 'recharge_card')
+const rechargeSubmitDisabled = computed(() => {
+  if (rechargeLoading.value || !selectedProvider.value) return true
+  if (isRechargeCardProvider.value) {
+    return !rechargeCardNo.value.trim() || !rechargeCardPassword.value.trim()
+  }
+  return rechargeAmount.value <= 0 || !agreedToNoRefund.value || !agreedToRechargeNotice.value || !agreedToTerms.value
+})
+
 function getSelectedPaymentMethodForProvider(provider: any): string {
-  if (!provider || provider.type === 'heleket') return ''
+  if (!provider || provider.type === 'heleket' || provider.type === 'recharge_card') return ''
   if (!provider.methods || provider.methods.length === 0) return ''
   return selectedPaymentMethod.value || provider.methods[0]
 }
@@ -1397,13 +1443,8 @@ function formatAmount() {
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
             </svg>
           </div>
-          <h3 class="text-xl font-semibold text-themed">{{ $t('aff.notActivated') }}</h3>
-          <p class="mx-auto mt-3 max-w-2xl text-sm leading-6 text-themed-muted">{{ $t('aff.activateHint') }}</p>
-          <div class="mt-6 flex justify-center">
-            <button class="btn btn-primary" @click="switchTab('balance'); openRechargeModal()">
-              {{ $t('aff.goRecharge') }}
-            </button>
-          </div>
+          <h3 class="text-xl font-semibold text-themed">{{ $t('aff.affDisabledByAdmin') }}</h3>
+          <p class="mx-auto mt-3 max-w-2xl text-sm leading-6 text-themed-muted">{{ $t('aff.affDisabledByAdminHint') }}</p>
         </div>
       </div>
 
@@ -1829,7 +1870,7 @@ function formatAmount() {
             </div>
 
             <!-- 支付方式选择 (仅当所选渠道支持多种方式时显示) -->
-            <div v-if="selectedProviderInfo && selectedProviderInfo.type !== 'heleket' && selectedProviderInfo.methods && selectedProviderInfo.methods.length > 1">
+            <div v-if="selectedProviderInfo && !isRechargeCardProvider && selectedProviderInfo.type !== 'heleket' && selectedProviderInfo.methods && selectedProviderInfo.methods.length > 1">
               <label class="label text-xs uppercase tracking-wide text-themed-muted mb-2">{{ $t('wallet.paymentMethodType') }}</label>
               <div class="grid grid-cols-2 gap-3">
                 <button
@@ -1868,8 +1909,32 @@ function formatAmount() {
               {{ $t('wallet.heleketSelectionHint') }}
             </div>
 
+            <div v-else-if="isRechargeCardProvider" class="space-y-3">
+              <div>
+                <label class="label text-xs uppercase tracking-wide text-themed-muted mb-2">{{ $t('wallet.rechargeCardNo') }}</label>
+                <input
+                  v-model.trim="rechargeCardNo"
+                  type="text"
+                  class="input w-full font-mono"
+                  autocomplete="off"
+                  :placeholder="$t('wallet.rechargeCardNoPlaceholder')"
+                />
+              </div>
+              <div>
+                <label class="label text-xs uppercase tracking-wide text-themed-muted mb-2">{{ $t('wallet.rechargeCardPassword') }}</label>
+                <input
+                  v-model.trim="rechargeCardPassword"
+                  type="password"
+                  class="input w-full font-mono"
+                  autocomplete="one-time-code"
+                  :placeholder="$t('wallet.rechargeCardPasswordPlaceholder')"
+                  @keyup.enter="createRechargeOrder"
+                />
+              </div>
+            </div>
+
             <!-- 充值金额 -->
-            <div>
+            <div v-if="!isRechargeCardProvider">
               <label class="label text-xs uppercase tracking-wide text-themed-muted mb-2">{{ $t('wallet.amountLabel') }}</label>
               <div class="grid grid-cols-4 gap-2 mb-3">
                 <button
@@ -1909,7 +1974,7 @@ function formatAmount() {
 
             <!-- 费用预览 -->
             <div
-              v-if="selectedProviderInfo && selectedRechargeFee > 0"
+              v-if="selectedProviderInfo && !isRechargeCardProvider && selectedRechargeFee > 0"
               class="p-3 rounded-lg bg-amber-500/10 border border-amber-500/20 text-sm"
             >
               <div class="flex items-start gap-2 text-amber-600 dark:text-amber-400">
@@ -1934,7 +1999,7 @@ function formatAmount() {
             </div>
 
             <!-- 确认复选框组 -->
-            <div class="space-y-2">
+            <div v-if="!isRechargeCardProvider" class="space-y-2">
               <!-- 无退款确认 -->
               <label for="agree-no-refund" class="flex items-start gap-2 cursor-pointer">
                 <input
@@ -1987,7 +2052,7 @@ function formatAmount() {
             <button class="btn btn-ghost" @click="showRechargeModal = false">{{ $t('common.cancel') }}</button>
             <button
               class="btn btn-primary min-w-[120px]"
-              :disabled="rechargeLoading || !selectedProvider || rechargeAmount <= 0 || !agreedToNoRefund || !agreedToRechargeNotice || !agreedToTerms"
+              :disabled="rechargeSubmitDisabled"
               @click="createRechargeOrder"
             >
               <svg v-if="!rechargeLoading" class="w-4 h-4 mr-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -1997,7 +2062,7 @@ function formatAmount() {
                 <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
                 <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
               </svg>
-              {{ rechargeLoading ? $t('common.processing') : $t('wallet.pay') }}
+              {{ rechargeLoading ? $t('common.processing') : (isRechargeCardProvider ? $t('wallet.redeemCard') : $t('wallet.pay')) }}
             </button>
           </div>
         </div>

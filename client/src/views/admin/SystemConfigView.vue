@@ -22,6 +22,7 @@ const loading = ref(true)
 // 每个卡片独立的 saving 状态
 const savingRegistration = ref(false)
 const savingInvitePricing = ref(false)
+const savingAffRebate = ref(false)
 const savingPopupAnnouncement = ref(false)
 const savingPopupPromo = ref(false)
 const savingHostingFeature = ref(false)
@@ -72,6 +73,7 @@ const form = ref({
   popup_promo_package_id: '',
   hosting_feature_enabled: true,
   hosting_market_entry_enabled: true,
+  aff_rebate_enabled: false,
   hosting_notice: '',
   ticket_enabled: true,
   free_site_mode: false,
@@ -144,7 +146,7 @@ const numericConfigKeys = ['default_quota_host', 'default_quota_friend', 'defaul
 const floatConfigKeys = ['transfer_fee', 'free_site_register_gift_balance']
 
 // 布尔类型的配置键
-const booleanConfigKeys = ['registration_enabled', 'require_invite_code', 'hosting_feature_enabled', 'hosting_market_entry_enabled', 'ticket_enabled', 'free_site_mode', 'free_site_register_gift_enabled', 'turnstile_enabled', 'smtp_enabled', 'smtp_secure', 'email_domain_whitelist_enabled']
+const booleanConfigKeys = ['registration_enabled', 'require_invite_code', 'hosting_feature_enabled', 'hosting_market_entry_enabled', 'aff_rebate_enabled', 'ticket_enabled', 'free_site_mode', 'free_site_register_gift_enabled', 'turnstile_enabled', 'smtp_enabled', 'smtp_secure', 'email_domain_whitelist_enabled']
 
 // 字符串类型的配置键
 const stringConfigKeys = ['turnstile_site_key', 'turnstile_secret_key', 'avatar_api_base', 'smtp_host', 'smtp_username', 'smtp_password', 'smtp_from_email', 'smtp_from_name', 'email_allowed_domains', 'footer_contact_email', 'brand_name', 'brand_subtitle', 'brand_logo_url', 'hosting_notice']
@@ -353,6 +355,18 @@ const hasInvitePricingChanges = computed(() => {
       ? JSON.stringify((form.value as any)[key] || [])
       : String((form.value as any)[key])
     return currentValue !== config.value
+  })
+})
+
+const affRebateKeys = ['aff_rebate_enabled']
+async function saveAffRebate() {
+  await saveConfigGroup(affRebateKeys, savingAffRebate)
+}
+const hasAffRebateChanges = computed(() => {
+  return affRebateKeys.some(key => {
+    const config = configs.value.find(c => c.key === key)
+    if (!config) return false
+    return String((form.value as any)[key]) !== config.value
   })
 })
 
@@ -835,6 +849,53 @@ async function sendTestEmail() {
               </button>
               <span class="text-xs" :class="form.require_invite_code ? 'text-themed font-medium' : 'text-themed-muted'">
                 {{ t('admin.system.inviteOnly') }}
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <div v-if="isAccessSection" class="card p-6">
+          <div class="flex items-center justify-between mb-2">
+            <h3 class="text-themed font-medium">{{ t('admin.system.affRebate.title') }}</h3>
+            <button
+              type="button"
+              class="btn-primary text-sm px-4 py-1.5"
+              :disabled="!hasAffRebateChanges || savingAffRebate"
+              @click="saveAffRebate"
+            >
+              {{ savingAffRebate ? t('admin.system.saving') : t('admin.system.save') }}
+            </button>
+          </div>
+          <p class="text-sm text-themed-muted mb-6">{{ t('admin.system.affRebate.description') }}</p>
+
+          <div class="flex items-center justify-between p-4 rounded-lg bg-themed-secondary/50">
+            <div class="flex-1">
+              <label class="text-sm font-medium text-themed">{{ t('admin.system.affRebate.affRebateEnabled') }}</label>
+              <p class="text-xs text-themed-muted mt-1">{{ t('admin.system.affRebate.affRebateEnabledDesc') }}</p>
+            </div>
+            <div class="flex items-center gap-3 ml-4">
+              <span class="text-xs" :class="form.aff_rebate_enabled ? 'text-themed-muted' : 'text-themed font-medium'">
+                {{ t('admin.system.affRebate.disabled') }}
+              </span>
+              <button
+                type="button"
+                role="switch"
+                :aria-checked="form.aff_rebate_enabled"
+                class="relative inline-flex h-7 w-12 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-offset-2"
+                :class="[
+                  form.aff_rebate_enabled
+                    ? 'bg-green-500 focus:ring-green-500'
+                    : 'bg-gray-400 dark:bg-gray-500 focus:ring-gray-400'
+                ]"
+                @click="form.aff_rebate_enabled = !form.aff_rebate_enabled"
+              >
+                <span
+                  class="pointer-events-none inline-block h-6 w-6 transform rounded-full bg-white shadow-lg ring-0 transition duration-200 ease-in-out"
+                  :class="form.aff_rebate_enabled ? 'translate-x-5' : 'translate-x-0'"
+                />
+              </button>
+              <span class="text-xs" :class="form.aff_rebate_enabled ? 'text-themed font-medium' : 'text-themed-muted'">
+                {{ t('admin.system.affRebate.enabled') }}
               </span>
             </div>
           </div>

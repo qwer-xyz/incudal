@@ -11,6 +11,8 @@ interface Props {
   instanceName: string
   renewPrice: number
   billingCycleLabel: string
+  disabled?: boolean
+  disabledReason?: string
 }
 
 interface ApplyAffResult {
@@ -35,7 +37,7 @@ const error = ref('')
 const inputRef = ref<HTMLInputElement | null>(null)
 
 const normalizedAffCode = computed(() => affCode.value.trim().toUpperCase())
-const canSubmit = computed(() => normalizedAffCode.value.length >= 3 && !submitting.value)
+const canSubmit = computed(() => normalizedAffCode.value.length >= 3 && !submitting.value && !props.disabled)
 const formattedRenewPrice = computed(() => props.renewPrice.toFixed(2))
 
 watch(() => props.show, async (show) => {
@@ -136,12 +138,21 @@ async function handleSubmit(): Promise<void> {
                 autocomplete="off"
                 class="input w-full font-mono uppercase"
                 :placeholder="t('instance.subscription.applyAffCodePlaceholder')"
+                :disabled="props.disabled || submitting"
                 @input="handleInput"
               />
             </div>
 
             <div
-              v-if="error"
+              v-if="props.disabled && props.disabledReason"
+              class="rounded-lg px-3 py-2 text-sm"
+              :class="themeStore.isDark ? 'bg-amber-500/10 text-amber-200' : 'bg-amber-50 text-amber-800'"
+            >
+              {{ props.disabledReason }}
+            </div>
+
+            <div
+              v-else-if="error"
               class="rounded-lg px-3 py-2 text-sm"
               :class="themeStore.isDark ? 'bg-red-500/10 text-red-300' : 'bg-red-50 text-red-700'"
             >
